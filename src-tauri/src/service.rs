@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Local;
 
-use crate::domain::{AppSnapshot, CostBreakdown, DailyUsage, TokenUsage};
+use crate::domain::{AppSnapshot, CostBreakdown, DailyUsage, PriceQuote, TokenUsage};
 use crate::pricing::{find_price_quote, normalize_model_for_pricing, PricingCache, PricingStore};
 use crate::providers::{codex::CodexUsageProvider, UsageProvider};
 
@@ -16,13 +16,11 @@ pub struct UsageAppService {
 
 pub fn format_token_count(value: u64) -> String {
     if value >= 1_000_000 {
-        let decimals = if value >= 10_000_000 { 0 } else { 1 };
-        return format!("{:.*}M", decimals, value as f64 / 1_000_000.0);
+        return format!("{:.1}M", value as f64 / 1_000_000.0);
     }
 
     if value >= 1_000 {
-        let decimals = if value >= 10_000 { 0 } else { 1 };
-        return format!("{:.*}K", decimals, value as f64 / 1_000.0);
+        return format!("{:.1}K", value as f64 / 1_000.0);
     }
 
     value.to_string()
@@ -72,6 +70,7 @@ fn build_app_snapshot(
     now: chrono::DateTime<Local>,
 ) -> AppSnapshot {
     let mut total_cost_usd = 0.0;
+    let mut total_cost_sparkline = vec![0.0; 48];
     let mut model_costs = Vec::new();
 
     for model_usage in usage.model_breakdown {
@@ -80,17 +79,19 @@ fn build_app_snapshot(
             continue;
         };
 
-        let billable_input_tokens = billable_input_tokens(&model_usage.usage);
-        let input_cost_usd =
-            billable_input_tokens as f64 / 1_000_000.0 * price_quote.input_per_million_usd;
-        let cached_input_cost_usd = model_usage.usage.cached_input_tokens as f64 / 1_000_000.0
-            * price_quote
-                .cached_input_per_million_usd
-                .unwrap_or(price_quote.input_per_million_usd);
-        let output_cost_usd = total_output_tokens(&model_usage.usage) as f64 / 1_000_000.0
-            * price_quote.output_per_million_usd;
+        let input_cost_usd = input_cost_for_usage(&model_usage.usage, &price_quote);
+        let cached_input_cost_usd = cached_input_cost_for_usage(&model_usage.usage, &price_quote);
+        let output_cost_usd = output_cost_for_usage(&model_usage.usage, &price_quote);
         let total = input_cost_usd + cached_input_cost_usd + output_cost_usd;
         total_cost_usd += total;
+        let cost_sparkline = model_usage
+            .usage_timeline
+            .iter()
+            .map(|usage| total_cost_for_usage(usage, &price_quote))
+            .collect::<Vec<_>>();
+        for (index, bucket_cost) in cost_sparkline.iter().enumerate() {
+            total_cost_sparkline[index] += bucket_cost;
+        }
 
         model_costs.push(CostBreakdown {
             model_name: model_usage.model_name,
@@ -100,10 +101,11 @@ fn build_app_snapshot(
             output_cost_usd,
             total_cost_usd: total,
             usage: model_usage.usage,
+            cost_sparkline,
         });
     }
 
-    let title = format!("Codex ${total_cost_usd:.2}");
+    let title = format!("${total_cost_usd:.2}");
     let tooltip = format!(
         "Codex today: ${total_cost_usd:.2}\n↑ {}   ⚡ {}   ↓ {}",
         format_token_count(billable_input_tokens(&usage.totals)),
@@ -117,6 +119,7 @@ fn build_app_snapshot(
         title,
         tooltip,
         total_cost_usd,
+        total_cost_sparkline,
         totals: usage.totals,
         model_costs,
         pricing_updated_at: Some(pricing.fetched_at.clone()),
@@ -124,6 +127,27 @@ fn build_app_snapshot(
         last_refreshed_at: now.to_rfc3339(),
         error_message: None,
     }
+}
+
+fn input_cost_for_usage(usage: &TokenUsage, price_quote: &PriceQuote) -> f64 {
+    billable_input_tokens(usage) as f64 / 1_000_000.0 * price_quote.input_per_million_usd
+}
+
+fn cached_input_cost_for_usage(usage: &TokenUsage, price_quote: &PriceQuote) -> f64 {
+    usage.cached_input_tokens as f64 / 1_000_000.0
+        * price_quote
+            .cached_input_per_million_usd
+            .unwrap_or(price_quote.input_per_million_usd)
+}
+
+fn output_cost_for_usage(usage: &TokenUsage, price_quote: &PriceQuote) -> f64 {
+    total_output_tokens(usage) as f64 / 1_000_000.0 * price_quote.output_per_million_usd
+}
+
+fn total_cost_for_usage(usage: &TokenUsage, price_quote: &PriceQuote) -> f64 {
+    input_cost_for_usage(usage, price_quote)
+        + cached_input_cost_for_usage(usage, price_quote)
+        + output_cost_for_usage(usage, price_quote)
 }
 
 pub fn build_error_snapshot(message: impl Into<String>) -> AppSnapshot {
@@ -136,6 +160,7 @@ pub fn build_error_snapshot(message: impl Into<String>) -> AppSnapshot {
         title: "Codex error".to_string(),
         tooltip: message.clone(),
         total_cost_usd: 0.0,
+        total_cost_sparkline: vec![0.0; 48],
         totals: TokenUsage::default(),
         model_costs: Vec::new(),
         pricing_updated_at: None,
@@ -169,6 +194,7 @@ mod tests {
                     output_tokens: 10,
                     reasoning_output_tokens: 0,
                 },
+                usage_timeline: vec![TokenUsage::default(); 48],
             }],
             totals: TokenUsage {
                 input_tokens: 100,
@@ -221,6 +247,7 @@ mod tests {
                     output_tokens: 100,
                     reasoning_output_tokens: 50,
                 },
+                usage_timeline: vec![TokenUsage::default(); 48],
             }],
             totals: TokenUsage {
                 input_tokens: 0,
@@ -255,5 +282,166 @@ mod tests {
 
         let model = &snapshot.model_costs[0];
         assert!((model.output_cost_usd - 0.0012).abs() < 1e-9);
+    }
+
+    #[test]
+    fn build_app_snapshot_projects_half_hour_cost_sparkline() {
+        let mut usage_timeline = vec![TokenUsage::default(); 48];
+        usage_timeline[0] = TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            output_tokens: 10,
+            reasoning_output_tokens: 0,
+        };
+        usage_timeline[1] = TokenUsage {
+            input_tokens: 50,
+            cached_input_tokens: 10,
+            output_tokens: 5,
+            reasoning_output_tokens: 5,
+        };
+
+        let usage = DailyUsage {
+            provider_id: "codex".to_string(),
+            date: "2026-03-17".to_string(),
+            model_breakdown: vec![crate::domain::ModelUsage {
+                model_name: "gpt-5.4".to_string(),
+                usage: TokenUsage {
+                    input_tokens: 150,
+                    cached_input_tokens: 50,
+                    output_tokens: 15,
+                    reasoning_output_tokens: 5,
+                },
+                usage_timeline,
+            }],
+            totals: TokenUsage {
+                input_tokens: 150,
+                cached_input_tokens: 50,
+                output_tokens: 15,
+                reasoning_output_tokens: 5,
+            },
+        };
+
+        let mut prices = HashMap::new();
+        prices.insert(
+            "gpt-5.4".to_string(),
+            LiteLlmPrice {
+                input_cost_per_token: Some(2.0 / 1_000_000.0),
+                cache_read_input_token_cost: Some(0.5 / 1_000_000.0),
+                output_cost_per_token: Some(8.0 / 1_000_000.0),
+            },
+        );
+
+        let pricing = PricingCache {
+            fetched_at: "2026-03-17T00:00:00Z".to_string(),
+            source_url: "test".to_string(),
+            prices,
+        };
+
+        let snapshot = build_app_snapshot(
+            usage,
+            &pricing,
+            false,
+            Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+        );
+
+        let model = &snapshot.model_costs[0];
+        assert_eq!(model.cost_sparkline.len(), 48);
+        assert!((model.cost_sparkline[0] - 0.00022).abs() < 1e-9);
+        assert!((model.cost_sparkline[1] - 0.000165).abs() < 1e-9);
+        assert_eq!(model.cost_sparkline[2], 0.0);
+    }
+
+    #[test]
+    fn build_app_snapshot_aggregates_total_cost_sparkline() {
+        let mut model_a_timeline = vec![TokenUsage::default(); 48];
+        model_a_timeline[0] = TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            output_tokens: 10,
+            reasoning_output_tokens: 0,
+        };
+
+        let mut model_b_timeline = vec![TokenUsage::default(); 48];
+        model_b_timeline[0] = TokenUsage {
+            input_tokens: 50,
+            cached_input_tokens: 0,
+            output_tokens: 20,
+            reasoning_output_tokens: 0,
+        };
+        model_b_timeline[1] = TokenUsage {
+            input_tokens: 25,
+            cached_input_tokens: 5,
+            output_tokens: 10,
+            reasoning_output_tokens: 0,
+        };
+
+        let usage = DailyUsage {
+            provider_id: "codex".to_string(),
+            date: "2026-03-17".to_string(),
+            model_breakdown: vec![
+                crate::domain::ModelUsage {
+                    model_name: "gpt-5.4".to_string(),
+                    usage: TokenUsage {
+                        input_tokens: 100,
+                        cached_input_tokens: 40,
+                        output_tokens: 10,
+                        reasoning_output_tokens: 0,
+                    },
+                    usage_timeline: model_a_timeline,
+                },
+                crate::domain::ModelUsage {
+                    model_name: "gpt-5-mini".to_string(),
+                    usage: TokenUsage {
+                        input_tokens: 75,
+                        cached_input_tokens: 5,
+                        output_tokens: 30,
+                        reasoning_output_tokens: 0,
+                    },
+                    usage_timeline: model_b_timeline,
+                },
+            ],
+            totals: TokenUsage {
+                input_tokens: 175,
+                cached_input_tokens: 45,
+                output_tokens: 40,
+                reasoning_output_tokens: 0,
+            },
+        };
+
+        let mut prices = HashMap::new();
+        prices.insert(
+            "gpt-5.4".to_string(),
+            LiteLlmPrice {
+                input_cost_per_token: Some(2.0 / 1_000_000.0),
+                cache_read_input_token_cost: Some(0.5 / 1_000_000.0),
+                output_cost_per_token: Some(8.0 / 1_000_000.0),
+            },
+        );
+        prices.insert(
+            "gpt-5-mini".to_string(),
+            LiteLlmPrice {
+                input_cost_per_token: Some(0.4 / 1_000_000.0),
+                cache_read_input_token_cost: Some(0.1 / 1_000_000.0),
+                output_cost_per_token: Some(1.6 / 1_000_000.0),
+            },
+        );
+
+        let pricing = PricingCache {
+            fetched_at: "2026-03-17T00:00:00Z".to_string(),
+            source_url: "test".to_string(),
+            prices,
+        };
+
+        let snapshot = build_app_snapshot(
+            usage,
+            &pricing,
+            false,
+            Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+        );
+
+        assert_eq!(snapshot.total_cost_sparkline.len(), 48);
+        assert!((snapshot.total_cost_sparkline[0] - 0.000272).abs() < 1e-9);
+        assert!((snapshot.total_cost_sparkline[1] - 0.0000245).abs() < 1e-9);
+        assert_eq!(snapshot.total_cost_sparkline[2], 0.0);
     }
 }

@@ -1,5 +1,10 @@
+import "@fontsource/nunito/latin-400.css";
+import "@fontsource/nunito/latin-600.css";
+import "@fontsource/nunito/latin-700.css";
+import "@fontsource/nunito/latin-800.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { toPng } from "html-to-image";
 
 type TokenUsage = {
   input_tokens: number;
@@ -16,6 +21,7 @@ type CostBreakdown = {
   output_cost_usd: number;
   total_cost_usd: number;
   usage: TokenUsage;
+  cost_sparkline: number[];
 };
 
 type AppSnapshot = {
@@ -24,6 +30,7 @@ type AppSnapshot = {
   title: string;
   tooltip: string;
   total_cost_usd: number;
+  total_cost_sparkline: number[];
   totals: TokenUsage;
   model_costs: CostBreakdown[];
   pricing_updated_at: string | null;
@@ -33,21 +40,23 @@ type AppSnapshot = {
 };
 
 let summaryEl: HTMLElement | null;
+let summaryTrendEl: HTMLElement | null;
 let totalsEl: HTMLElement | null;
 let modelsEl: HTMLElement | null;
-let statusEl: HTMLElement | null;
-let idleStatusText = "Waiting for data...";
+let shareButtonEl: HTMLButtonElement | null;
+let toastEl: HTMLElement | null;
+let toastTimer: number | undefined;
 
 function usd(value: number) {
-  return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 function formatTokens(value: number) {
   if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+    return `${(value / 1_000_000).toFixed(1)}M`;
   }
   if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+    return `${(value / 1_000).toFixed(1)}K`;
   }
   return value.toString();
 }
@@ -76,31 +85,30 @@ function iconMarkup(kind: "input" | "cached" | "output") {
   `;
 }
 
-function formatRelativeTime(timestamp: string) {
-  const target = new Date(timestamp);
-  if (Number.isNaN(target.getTime())) {
-    return timestamp;
-  }
+function sparklineMarkup(points: number[]) {
+  const width = 136;
+  const height = 28;
+  const baselineColor = "rgba(244, 239, 229, 0.05)";
+  const lineColor = "rgba(243, 169, 75, 0.52)";
+  const values = points.length ? points : [0];
+  const maxValue = Math.max(...values, 0);
+  const stepX = values.length > 1 ? width / (values.length - 1) : width;
+  const baselineY = height - 3;
 
-  const diffMs = target.getTime() - Date.now();
-  const diffMinutes = Math.round(diffMs / 60_000);
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const path = values
+    .map((value, index) => {
+      const x = Number((index * stepX).toFixed(2));
+      const y = maxValue > 0 ? Number((baselineY - (value / maxValue) * (height - 6)).toFixed(2)) : baselineY;
+      return `${index === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
 
-  if (Math.abs(diffMinutes) < 1) {
-    return "just now";
-  }
-
-  if (Math.abs(diffMinutes) < 60) {
-    return rtf.format(diffMinutes, "minute");
-  }
-
-  const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) {
-    return rtf.format(diffHours, "hour");
-  }
-
-  const diffDays = Math.round(diffHours / 24);
-  return rtf.format(diffDays, "day");
+  return `
+    <svg class="model-sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M 0 ${baselineY} L ${width} ${baselineY}" fill="none" stroke="${baselineColor}" stroke-width="1"></path>
+      <path d="${path}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+  `;
 }
 
 function billableInputTokens(usage: TokenUsage) {
@@ -111,17 +119,74 @@ function totalOutputTokens(usage: TokenUsage) {
   return usage.output_tokens + usage.reasoning_output_tokens;
 }
 
-function render(snapshot: AppSnapshot) {
-  idleStatusText = snapshot.error_message
-    ? snapshot.error_message
-    : `Updated ${formatRelativeTime(snapshot.last_refreshed_at)}`;
+function showToast(message: string, kind: "success" | "error" = "success") {
+  if (!toastEl) {
+    return;
+  }
 
+  if (toastTimer) {
+    window.clearTimeout(toastTimer);
+  }
+
+  toastEl.innerHTML = `<div class="toast-message${kind === "error" ? " error" : ""}">${message}</div>`;
+  toastEl.classList.add("visible");
+  toastTimer = window.setTimeout(() => {
+    toastEl?.classList.remove("visible");
+  }, 1800);
+}
+
+async function copyDashboardSnapshot() {
+  if (!shareButtonEl) {
+    return;
+  }
+
+  const target = document.querySelector<HTMLElement>("#capture-target");
+  if (!target) {
+    showToast("Copy failed", "error");
+    return;
+  }
+
+  shareButtonEl.disabled = true;
+
+  try {
+    const rect = target.getBoundingClientRect();
+    const exportPadding = 28;
+    const pngDataUrl = await toPng(target, {
+      cacheBust: true,
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      backgroundColor: "#171a1f",
+      width: Math.ceil(rect.width) + exportPadding * 2,
+      height: Math.ceil(rect.height) + exportPadding * 2,
+      filter: (node) => !(node instanceof HTMLElement && node.id === "status"),
+      style: {
+        boxSizing: "border-box",
+        padding: `${exportPadding}px`,
+        background:
+          "radial-gradient(circle at top left, rgba(242, 146, 29, 0.18), transparent 22rem), linear-gradient(180deg, #121417 0%, #171a1f 100%)",
+      },
+    });
+    const base64 = pngDataUrl.split(",", 2)[1];
+    if (!base64) {
+      throw new Error("Invalid image output");
+    }
+
+    await invoke("copy_dashboard_image_to_clipboard", { pngBase64: base64 });
+    showToast("Copied to clipboard");
+  } catch (error) {
+    console.error(error);
+    showToast("Copy failed", "error");
+  } finally {
+    shareButtonEl.disabled = false;
+  }
+}
+
+function render(snapshot: AppSnapshot) {
   if (summaryEl) {
     summaryEl.textContent = usd(snapshot.total_cost_usd);
   }
 
-  if (statusEl) {
-    statusEl.textContent = idleStatusText;
+  if (summaryTrendEl) {
+    summaryTrendEl.innerHTML = sparklineMarkup(snapshot.total_cost_sparkline);
   }
 
   if (totalsEl) {
@@ -163,6 +228,7 @@ function render(snapshot: AppSnapshot) {
           <article class="model-card">
             <div class="model-row">
               <h3>${item.model_name}</h3>
+              <div class="model-trend">${sparklineMarkup(item.cost_sparkline)}</div>
               <strong>${usd(item.total_cost_usd)}</strong>
             </div>
             <div class="model-metrics">
@@ -188,9 +254,15 @@ function render(snapshot: AppSnapshot) {
 
 window.addEventListener("DOMContentLoaded", async () => {
   summaryEl = document.querySelector("#summary");
+  summaryTrendEl = document.querySelector("#summary-trend");
   totalsEl = document.querySelector("#totals");
   modelsEl = document.querySelector("#models");
-  statusEl = document.querySelector("#status");
+  shareButtonEl = document.querySelector("#share-button");
+  toastEl = document.querySelector("#toast");
+
+  shareButtonEl?.addEventListener("click", () => {
+    void copyDashboardSnapshot();
+  });
 
   const snapshot = await invoke<AppSnapshot>("get_snapshot");
   render(snapshot);

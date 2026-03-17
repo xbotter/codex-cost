@@ -1,9 +1,10 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, Timelike};
 use serde_json::Value;
 use walkdir::WalkDir;
 
@@ -55,27 +56,51 @@ impl UsageProvider for CodexUsageProvider {
         }
 
         let mut per_model = BTreeMap::<String, TokenUsage>::new();
+        let mut per_model_timeline = BTreeMap::<String, Vec<TokenUsage>>::new();
 
         for path in self.session_files() {
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
 
             for snapshot in parse_session_jsonl(&path, &contents, date)? {
+                let bucket = half_hour_bucket_index(&snapshot.timestamp).unwrap_or(0);
                 per_model
-                    .entry(snapshot.model_name)
+                    .entry(snapshot.model_name.clone())
                     .or_default()
+                    .add_assign(&snapshot.usage);
+                per_model_timeline
+                    .entry(snapshot.model_name)
+                    .or_insert_with(|| vec![TokenUsage::default(); 48])[bucket]
                     .add_assign(&snapshot.usage);
             }
         }
 
         let mut totals = TokenUsage::default();
-        let model_breakdown = per_model
+        let mut model_breakdown: Vec<_> = per_model
             .into_iter()
             .map(|(model_name, usage)| {
                 totals.add_assign(&usage);
-                ModelUsage { model_name, usage }
+                let usage_timeline = per_model_timeline
+                    .remove(&model_name)
+                    .unwrap_or_else(|| vec![TokenUsage::default(); 48]);
+                ModelUsage {
+                    model_name,
+                    usage,
+                    usage_timeline,
+                }
             })
             .collect();
+        model_breakdown.sort_by(|left, right| {
+            Reverse(left.usage.total_tokens())
+                .cmp(&Reverse(right.usage.total_tokens()))
+                .then_with(|| {
+                    Reverse(left.usage.output_tokens).cmp(&Reverse(right.usage.output_tokens))
+                })
+                .then_with(|| {
+                    Reverse(left.usage.input_tokens).cmp(&Reverse(right.usage.input_tokens))
+                })
+                .then_with(|| left.model_name.cmp(&right.model_name))
+        });
 
         Ok(DailyUsage {
             provider_id: self.id().to_string(),
@@ -203,6 +228,13 @@ fn timestamp_matches_local_date(timestamp: &str, date: NaiveDate) -> bool {
         .unwrap_or(false)
 }
 
+fn half_hour_bucket_index(timestamp: &str) -> Option<usize> {
+    let local = DateTime::parse_from_rfc3339(timestamp)
+        .ok()?
+        .with_timezone(&Local);
+    Some((local.hour() as usize) * 2 + usize::from(local.minute() >= 30))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -249,6 +281,78 @@ mod tests {
         assert_eq!(usage.model_breakdown[0].usage.cached_input_tokens, 60);
         assert_eq!(usage.model_breakdown[0].usage.output_tokens, 30);
         assert_eq!(usage.model_breakdown[0].usage.reasoning_output_tokens, 15);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn collect_daily_usage_orders_models_by_total_usage_desc() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "codex-cost-provider-sort-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+
+        let today_dir = root.join("2026").join("03").join("17");
+        fs::create_dir_all(&today_dir)?;
+
+        fs::write(
+            today_dir.join("session.jsonl"),
+            r#"{"timestamp":"2026-03-17T09:00:00Z","type":"turn_context","payload":{"model":"gpt-5-mini"}}
+{"timestamp":"2026-03-17T09:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":80}}}}
+{"timestamp":"2026-03-17T09:10:00Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-03-17T09:15:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":10,"total_tokens":270}}}}
+"#,
+        )?;
+
+        let provider = CodexUsageProvider::new(root.clone());
+        let usage = provider.collect_daily_usage(NaiveDate::from_ymd_opt(2026, 3, 17).unwrap())?;
+
+        assert_eq!(usage.model_breakdown.len(), 2);
+        assert_eq!(usage.model_breakdown[0].model_name, "gpt-5.4");
+        assert_eq!(usage.model_breakdown[1].model_name, "gpt-5-mini");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn collect_daily_usage_groups_model_timeline_into_half_hour_buckets() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "codex-cost-provider-buckets-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+
+        let today_dir = root.join("2026").join("03").join("17");
+        fs::create_dir_all(&today_dir)?;
+
+        fs::write(
+            today_dir.join("session.jsonl"),
+            r#"{"timestamp":"2026-03-17T00:05:00+08:00","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-03-17T00:10:00+08:00","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":105}}}}
+{"timestamp":"2026-03-17T00:25:00+08:00","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":40,"output_tokens":15,"reasoning_output_tokens":0,"total_tokens":175}}}}
+{"timestamp":"2026-03-17T00:35:00+08:00","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":220,"cached_input_tokens":50,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":245}}}}
+"#,
+        )?;
+
+        let provider = CodexUsageProvider::new(root.clone());
+        let usage = provider.collect_daily_usage(NaiveDate::from_ymd_opt(2026, 3, 17).unwrap())?;
+        let model = &usage.model_breakdown[0];
+
+        assert_eq!(model.usage_timeline.len(), 48);
+        assert_eq!(model.usage_timeline[0].input_tokens, 160);
+        assert_eq!(model.usage_timeline[0].cached_input_tokens, 40);
+        assert_eq!(model.usage_timeline[0].output_tokens, 15);
+        assert_eq!(model.usage_timeline[1].input_tokens, 60);
+        assert_eq!(model.usage_timeline[1].cached_input_tokens, 10);
+        assert_eq!(model.usage_timeline[1].output_tokens, 5);
+        assert_eq!(model.usage_timeline[1].reasoning_output_tokens, 5);
 
         fs::remove_dir_all(root)?;
         Ok(())

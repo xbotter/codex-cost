@@ -34,6 +34,13 @@ impl TokenUsage {
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
     }
+
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            + self.cached_input_tokens
+            + self.output_tokens
+            + self.reasoning_output_tokens
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +63,7 @@ pub struct DailyUsage {
 pub struct ModelUsage {
     pub model_name: String,
     pub usage: TokenUsage,
+    pub usage_timeline: Vec<TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +82,7 @@ pub struct CostBreakdown {
     pub output_cost_usd: f64,
     pub total_cost_usd: f64,
     pub usage: TokenUsage,
+    pub cost_sparkline: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +92,7 @@ pub struct AppSnapshot {
     pub title: String,
     pub tooltip: String,
     pub total_cost_usd: f64,
+    pub total_cost_sparkline: Vec<f64>,
     pub totals: TokenUsage,
     pub model_costs: Vec<CostBreakdown>,
     pub pricing_updated_at: Option<String>,

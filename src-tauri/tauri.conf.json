@@ -1,10 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "codex-cost",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "identifier": "com.xbotter.codexcost",
   "build": {
     "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "node scripts/prepare-tauri-bundle.mjs",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -27,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "./windows/hooks.nsh"
