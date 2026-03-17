@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codex-cost</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-head">
+          <div>
+            <p class="eyebrow">Today</p>
+            <h1 id="summary">$0.0000</h1>
+          </div>
+          <div class="hero-side">
+            <p class="meta-text" id="status">Waiting for data...</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="metrics" id="totals"></section>
+
+      <section class="panel">
+        <span class="panel-label">Model Breakdown</span>
+        <div class="model-list" id="models"></div>
+      </section>
+    </main>
+  </body>
+</html>

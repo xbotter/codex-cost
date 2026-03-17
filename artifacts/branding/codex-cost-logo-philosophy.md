@@ -1,0 +1,11 @@
+# Measured Glyph
+
+This mark should feel less like a mascot and more like an instrument. Its primary language is calibrated form: a near-complete circle interrupted by a measured opening, a shape that suggests both the letter C and the act of reading a meter. The logo must communicate quiet precision before it communicates personality. It should look deliberately constructed, meticulously crafted, and reduced only after painstaking attention rather than simplified out of convenience.
+
+The visual system is built on restraint. Space carries as much meaning as stroke. Negative space should be treated as a structural material, not an absence. The opening in the form is not decorative; it is the point where measurement enters the symbol. Every interval, radius, and offset should appear labored over with the patience of master-level execution. The result must feel engineered with deep expertise and refined through countless small corrections.
+
+Color is used sparingly and with conviction. A warm amber should act as the signal of value, energy, and attention, while any secondary tone should remain subdued and architectural. The emblem must feel equally at home in software, on a tray icon, or embossed into a physical object. It should carry the confidence of something meticulously crafted for repeated daily use rather than something expressive for a single campaign.
+
+Scale and rhythm come from repetition under discipline. Short calibrated strokes, ticks, or bars may appear where they reinforce the idea of usage, accounting, or graduated intensity, but never in a noisy way. These accents should feel like the marks on a professional instrument: exact, deliberate, and earned. They must appear as the product of deep expertise, with each proportion tuned until the logo reads instantly even at very small sizes.
+
+The overall composition must remain severe, elegant, and unmistakable. Minimal text belongs outside the mark; the logo itself should carry meaning through contour, interval, and weight. It must feel painstakingly refined, museum-clean, and top-tier in its execution. The final object should look like it took serious time to perfect, with every curve and cut resolved by someone operating at the top of their field.

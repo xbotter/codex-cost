@@ -1,0 +1,38 @@
+changelog:
+  categories:
+    - title: Features
+      labels:
+        - feat
+        - enhancement
+    - title: Fixes
+      labels:
+        - fix
+        - bug
+    - title: UI and UX
+      labels:
+        - ui
+        - design
+    - title: Documentation
+      labels:
+        - docs
+    - title: CI and Release
+      labels:
+        - ci
+        - release
+    - title: Maintenance
+      labels:
+        - chore
+        - refactor
+        - dependencies
+  exclude:
+    labels:
+      - skip-changelog
+change-template: '- $TITLE by @$AUTHOR in #$NUMBER'
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Installation
+
+  Download the asset that matches your platform from the list below.
