@@ -47,7 +47,16 @@ It reads local Codex usage logs, estimates the current day's USD cost, and keeps
 
 ## Installation
 
-Download the latest release for your platform from GitHub Releases.
+Download from GitHub Releases:
+
+- Latest release page: [github.com/xbotter/codex-cost/releases/latest](https://github.com/xbotter/codex-cost/releases/latest)
+
+Platform notes:
+
+- macOS Apple Silicon: download the `aarch64` `.dmg`
+- macOS Intel: download the `x64` `.dmg`
+- Windows: download the NSIS installer
+- Linux: choose `AppImage` for a portable build or `deb` for Debian/Ubuntu-based systems
 
 Windows builds are distributed as an NSIS installer. The installer also places `WebView2Loader.dll` next to the app binary to avoid missing-loader startup failures.
 
