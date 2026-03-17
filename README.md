@@ -4,6 +4,8 @@
 
 It reads local Codex usage logs, estimates the current day's USD cost, and keeps that number close at hand through a tray icon, tooltip, and compact dashboard.
 
+![codex-cost dashboard](docs/dashboard-screenshot.png)
+
 ## Highlights
 
 - Always-on tray app for Windows, macOS, and Linux
