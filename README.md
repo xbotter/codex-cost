@@ -1,40 +1,49 @@
 # codex-cost
 
-A cross-platform Tauri tray app that reads local Codex session logs, estimates the daily USD cost, and keeps that value visible from the system tray.
+`codex-cost` is a lightweight desktop tray app for Codex users who want to keep today's cost visible at a glance.
 
-## Why
+It reads local Codex usage logs, estimates the current day's USD cost, and keeps that number close at hand through a tray icon, tooltip, and compact dashboard.
 
-`codex-cost` is meant for people who already use Codex locally and want a lightweight, always-on cost view without opening logs or running CLI reports manually.
+## Highlights
+
+- Always-on tray app for Windows, macOS, and Linux
+- Reads local Codex logs directly
+- Tracks daily usage in local timezone
+- Includes subagent usage
+- Uses online LiteLLM pricing with local cache fallback
+- Provides a quiet dashboard for cost and token breakdown
+
+## What It Feels Like
+
+`codex-cost` is designed to stay out of the way.
+
+- Live in the tray instead of a terminal tab
+- Check today's value in one glance
+- Open a compact dashboard only when you need detail
+- Close the window without quitting the app
+
+## Installation
+
+Download the latest release for your platform from GitHub Releases.
+
+Windows builds are distributed as an NSIS installer. The installer also places `WebView2Loader.dll` next to the app binary to avoid missing-loader startup failures.
+
+## How It Works
+
+`codex-cost` reads local Codex session JSONL logs and calculates usage from session deltas instead of summing raw cumulative counters.
+
+The current implementation:
+
+- groups usage by local day
+- treats billable input as `input_tokens - cached_input_tokens`
+- includes `reasoning_output_tokens` in output cost
+- preserves cross-day session baselines to avoid overcounting
 
 ## Acknowledgements
 
 This project is inspired by [`ccusage`](https://github.com/ryoppippi/ccusage).
 
-- The pricing source and overall Codex accounting direction were validated against `ccusage`.
-- `codex-cost` focuses on a desktop tray experience and local always-on visibility rather than a CLI report workflow.
-
-## Features
-
-- Reads local Codex session JSONL logs directly
-- Aggregates usage by local day and local timezone
-- Includes subagent usage
-- Uses online LiteLLM pricing with local caching
-- Calculates billable input as `input_tokens - cached_input_tokens`
-- Includes `reasoning_output_tokens` in output cost
-- Shows cost in the tray and a compact dashboard
-- Minimizes to tray and reopens on tray double-click
-
-## Supported Platforms
-
-- Windows
-- macOS
-- Linux
-
-## Installation
-
-Download a release artifact from the GitHub Releases page for your platform.
-
-Windows builds are distributed as an NSIS installer. The installer also places `WebView2Loader.dll` next to the app binary to avoid missing-loader startup failures.
+Its Codex pricing and accounting behavior were an important reference while validating the usage model in `codex-cost`. This project takes that accounting direction and turns it into a desktop tray experience focused on always-on visibility.
 
 ## Development
 
@@ -68,29 +77,6 @@ Build release artifacts locally:
 npm run build
 npx tauri build
 ```
-
-## How Usage Is Calculated
-
-- Usage is tracked per session by reading `token_count.total_token_usage` snapshots.
-- Costs are calculated from session deltas, not by summing raw cumulative values.
-- Cross-day sessions are handled by preserving the prior session baseline before counting the first event of the current day.
-- Pricing is fetched online and cached locally.
-
-## Repository Standards
-
-This repository includes:
-
-- MIT license
-- contribution guide
-- code of conduct
-- security policy
-- issue and PR templates
-- GitHub Actions for CI and release builds
-- generated GitHub release notes configuration
-
-## Release Process
-
-Pushing a tag like `v0.1.0` triggers the release workflow. It builds release artifacts for Windows, macOS, and Linux, then publishes them to GitHub Releases with generated release notes.
 
 ## License
 
