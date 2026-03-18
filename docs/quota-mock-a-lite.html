@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codex-cost quota mock A lite</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14171b;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: #f4efe5;
+        --muted: rgba(244, 239, 229, 0.5);
+        --orange: #f3a94b;
+        font-family: "Nunito", "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(242, 146, 29, 0.16), transparent 20rem),
+          linear-gradient(180deg, #121417 0%, #171a1f 100%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1380px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+        font-weight: 800;
+      }
+      .intro {
+        color: var(--muted);
+        margin-bottom: 28px;
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(320px, 1fr));
+        gap: 22px;
+      }
+      .card {
+        background: rgba(19, 22, 27, 0.86);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        overflow: hidden;
+      }
+      .label {
+        padding: 14px 18px 0;
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .shell {
+        min-height: 560px;
+        padding: 22px 28px 28px;
+        background:
+          radial-gradient(circle at top left, rgba(242, 146, 29, 0.15), transparent 18rem),
+          linear-gradient(180deg, #121417 0%, #171a1f 100%);
+      }
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .amount {
+        margin-top: 10px;
+        font-size: 72px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+        color: var(--orange);
+        line-height: 0.95;
+      }
+      .sub {
+        color: rgba(244, 239, 229, 0.42);
+        font-size: 14px;
+        margin-top: 14px;
+      }
+      .quota {
+        margin-top: 28px;
+        display: grid;
+        gap: 10px;
+      }
+      .quota-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .quota-left {
+        color: var(--text);
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+      .bar {
+        height: 9px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .fill {
+        width: 74%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #f3a94b 0%, #f6bf65 100%);
+      }
+      .caption {
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      @media (max-width: 1200px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Quota A, simplified</h1>
+      <div class="intro">Same quiet-inline idea, but with much lighter quota copy.</div>
+      <div class="grid">
+        <section class="card">
+          <div class="label">A1. Target + percent</div>
+          <div class="shell">
+            <div class="eyebrow">Today</div>
+            <div class="amount">$184.22</div>
+            <div class="sub">Updated just now</div>
+            <div class="quota">
+              <div class="quota-top">
+                <div class="quota-left">Target $250</div>
+                <div>74%</div>
+              </div>
+              <div class="bar"><div class="fill"></div></div>
+            </div>
+          </div>
+          <div class="caption">最简。只保留目标值和进度百分比，不再重复当前金额。</div>
+        </section>
+
+        <section class="card">
+          <div class="label">A2. Remaining to target</div>
+          <div class="shell">
+            <div class="eyebrow">Today</div>
+            <div class="amount">$184.22</div>
+            <div class="sub">Updated just now</div>
+            <div class="quota">
+              <div class="quota-top">
+                <div class="quota-left">$65.78 to target</div>
+                <div>$250 goal</div>
+              </div>
+              <div class="bar"><div class="fill"></div></div>
+            </div>
+          </div>
+          <div class="caption">更偏“还差多少”的语义。适合 quota 被理解成目标，而不是硬限额。</div>
+        </section>
+
+        <section class="card">
+          <div class="label">A3. Cap + remaining</div>
+          <div class="shell">
+            <div class="eyebrow">Today</div>
+            <div class="amount">$184.22</div>
+            <div class="sub">Updated just now</div>
+            <div class="quota">
+              <div class="quota-top">
+                <div class="quota-left">$65.78 left</div>
+                <div>$250 cap</div>
+              </div>
+              <div class="bar"><div class="fill"></div></div>
+            </div>
+          </div>
+          <div class="caption">如果 quota 更多是限额语义，这版最自然，信息也最轻。</div>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>

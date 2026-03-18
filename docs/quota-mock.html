@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codex-cost quota mocks</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14171b;
+        --panel: #1a1d22;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: #f4efe5;
+        --muted: rgba(244, 239, 229, 0.5);
+        --orange: #f3a94b;
+        --orange-soft: rgba(243, 169, 75, 0.18);
+        --blue: #7ea4c9;
+        --gold: #e8c37a;
+        font-family: "Nunito", "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(242, 146, 29, 0.16), transparent 20rem),
+          linear-gradient(180deg, #121417 0%, #171a1f 100%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1500px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+        font-weight: 800;
+      }
+      .intro {
+        color: var(--muted);
+        margin-bottom: 28px;
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(320px, 1fr));
+        gap: 22px;
+      }
+      .card {
+        background: rgba(19, 22, 27, 0.86);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        overflow: hidden;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
+      }
+      .label {
+        padding: 14px 18px 0;
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .mock {
+        padding: 18px;
+      }
+      .shell {
+        min-height: 720px;
+        padding: 12px 24px 30px;
+        background:
+          radial-gradient(circle at top left, rgba(242, 146, 29, 0.15), transparent 18rem),
+          linear-gradient(180deg, #121417 0%, #171a1f 100%);
+      }
+      .topline {
+        height: 24px;
+      }
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .hero {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .amount {
+        font-size: 72px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+        color: var(--orange);
+        line-height: 0.95;
+      }
+      .sub {
+        color: rgba(244, 239, 229, 0.42);
+        font-size: 14px;
+      }
+      .quota-inline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 0 0;
+      }
+      .quota-inline .meta {
+        display: grid;
+        gap: 6px;
+      }
+      .quota-inline .meta strong,
+      .quota-band strong,
+      .quota-meter strong {
+        font-size: 16px;
+        font-weight: 800;
+        color: var(--text);
+      }
+      .quota-inline .meta span,
+      .quota-band span,
+      .quota-meter span {
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .progress {
+        height: 8px;
+        width: 150px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #f3a94b 0%, #f6bf65 100%);
+      }
+      .section {
+        padding: 18px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+      .metric-label {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .metric-value {
+        margin-top: 10px;
+        font-size: 42px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+      }
+      .icon.input { color: var(--orange); }
+      .icon.cached { color: var(--blue); }
+      .icon.output { color: var(--gold); }
+      .quota-band {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border: 1px solid rgba(243, 169, 75, 0.18);
+        background: linear-gradient(180deg, rgba(243, 169, 75, 0.08), rgba(243, 169, 75, 0.03));
+        display: grid;
+        gap: 12px;
+      }
+      .quota-band-head,
+      .quota-meter-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 16px;
+      }
+      .quota-band-line {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .quota-meter {
+        margin-top: 18px;
+        display: grid;
+        gap: 14px;
+      }
+      .quota-meter-card {
+        padding: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .meter {
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .meter .fill.warning { background: linear-gradient(90deg, #f3a94b 0%, #e8c37a 100%); }
+      .meter .fill.safe { background: linear-gradient(90deg, #7ea4c9 0%, #98b8d7 100%); }
+      .quota-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .quota-cell {
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .quota-cell div:first-child {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+      }
+      .quota-cell strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 26px;
+        letter-spacing: -0.04em;
+      }
+      .models {
+        padding-top: 16px;
+      }
+      .models h3 {
+        margin: 0 0 18px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 18px 0;
+        border-top: 1px solid var(--line);
+      }
+      .row:first-of-type { border-top: 0; }
+      .name {
+        font-size: 22px;
+        font-weight: 800;
+      }
+      .cost {
+        color: var(--orange);
+        font-size: 22px;
+        font-weight: 800;
+      }
+      .tokens {
+        display: flex;
+        gap: 18px;
+        margin-top: 10px;
+        color: rgba(244, 239, 229, 0.86);
+      }
+      .caption {
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      @media (max-width: 1200px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Quota UI mockups</h1>
+      <div class="intro">Same dashboard, three different ways to express a daily USD quota that can be interpreted as either a target or a cap.</div>
+      <div class="grid">
+        <section class="card">
+          <div class="label">A. Quiet inline progress</div>
+          <div class="mock">
+            <div class="shell">
+              <div class="topline"></div>
+              <div class="hero">
+                <div class="eyebrow">Today</div>
+                <div class="amount">$184.22</div>
+                <div class="sub">Updated just now</div>
+                <div class="quota-inline">
+                  <div class="meta">
+                    <span>Daily target</span>
+                    <strong>$184.22 of $250.00</strong>
+                  </div>
+                  <div>
+                    <div class="progress"><div class="fill" style="width:74%"></div></div>
+                    <div class="sub" style="margin-top:8px; text-align:right;">74% reached</div>
+                  </div>
+                </div>
+              </div>
+              <div class="section">
+                <div class="metrics">
+                  <div><div class="metric-label"><span class="icon input">↑</span>Input</div><div class="metric-value">26M</div></div>
+                  <div><div class="metric-label"><span class="icon cached">⚡</span>Cached</div><div class="metric-value">411M</div></div>
+                  <div><div class="metric-label"><span class="icon output">↓</span>Output</div><div class="metric-value">1.4M</div></div>
+                </div>
+              </div>
+              <div class="models">
+                <h3>Model breakdown</h3>
+                <div class="row">
+                  <div><div class="name">gpt-5.3-codex</div><div class="tokens"><span>↑ 3.5M</span><span>⚡ 35M</span><span>↓ 178K</span></div></div>
+                  <div class="cost">$14.76</div>
+                </div>
+                <div class="row">
+                  <div><div class="name">gpt-5.4</div><div class="tokens"><span>↑ 23M</span><span>⚡ 376M</span><span>↓ 1.2M</span></div></div>
+                  <div class="cost">$169.45</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="caption">最克制。把 quota 当成 hero 下方的一条次级状态。适合“平时不打扰，但需要有目标感”的产品口径。</div>
+        </section>
+
+        <section class="card">
+          <div class="label">B. Dedicated quota band</div>
+          <div class="mock">
+            <div class="shell">
+              <div class="topline"></div>
+              <div class="hero">
+                <div class="eyebrow">Today</div>
+                <div class="amount">$184.22</div>
+                <div class="sub">Updated just now</div>
+                <div class="quota-band">
+                  <div class="quota-band-head">
+                    <div>
+                      <span>Daily quota</span>
+                      <strong>Target mode</strong>
+                    </div>
+                    <strong>$250.00</strong>
+                  </div>
+                  <div class="quota-band-line">
+                    <div class="progress" style="flex:1 1 auto; width:auto;"><div class="fill" style="width:74%"></div></div>
+                    <strong>$65.78 left</strong>
+                  </div>
+                  <div class="sub">Current pace: on track to finish near the target.</div>
+                </div>
+              </div>
+              <div class="section">
+                <div class="metrics">
+                  <div><div class="metric-label"><span class="icon input">↑</span>Input</div><div class="metric-value">26M</div></div>
+                  <div><div class="metric-label"><span class="icon cached">⚡</span>Cached</div><div class="metric-value">411M</div></div>
+                  <div><div class="metric-label"><span class="icon output">↓</span>Output</div><div class="metric-value">1.4M</div></div>
+                </div>
+              </div>
+              <div class="models">
+                <h3>Model breakdown</h3>
+                <div class="row">
+                  <div><div class="name">gpt-5.3-codex</div><div class="tokens"><span>↑ 3.5M</span><span>⚡ 35M</span><span>↓ 178K</span></div></div>
+                  <div class="cost">$14.76</div>
+                </div>
+                <div class="row">
+                  <div><div class="name">gpt-5.4</div><div class="tokens"><span>↑ 23M</span><span>⚡ 376M</span><span>↓ 1.2M</span></div></div>
+                  <div class="cost">$169.45</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="caption">最容易解释“目标”和“限额”这两个模式。中间这一带可以明确切换文案，也方便后面加设置入口。</div>
+        </section>
+
+        <section class="card">
+          <div class="label">C. Meter card with budget semantics</div>
+          <div class="mock">
+            <div class="shell">
+              <div class="topline"></div>
+              <div class="hero">
+                <div class="eyebrow">Today</div>
+                <div class="amount">$184.22</div>
+                <div class="sub">Updated just now</div>
+                <div class="quota-meter">
+                  <div class="quota-meter-card">
+                    <div class="quota-meter-head">
+                      <div>
+                        <span>Daily limit</span>
+                        <strong>$250.00 cap</strong>
+                      </div>
+                      <strong>73.7%</strong>
+                    </div>
+                    <div class="meter"><div class="fill warning" style="width:73.7%"></div></div>
+                    <div class="quota-grid">
+                      <div class="quota-cell"><div>Used</div><strong>$184</strong></div>
+                      <div class="quota-cell"><div>Remaining</div><strong>$66</strong></div>
+                      <div class="quota-cell"><div>Status</div><strong style="font-size:20px;">Healthy</strong></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="section">
+                <div class="metrics">
+                  <div><div class="metric-label"><span class="icon input">↑</span>Input</div><div class="metric-value">26M</div></div>
+                  <div><div class="metric-label"><span class="icon cached">⚡</span>Cached</div><div class="metric-value">411M</div></div>
+                  <div><div class="metric-label"><span class="icon output">↓</span>Output</div><div class="metric-value">1.4M</div></div>
+                </div>
+              </div>
+              <div class="models">
+                <h3>Model breakdown</h3>
+                <div class="row">
+                  <div><div class="name">gpt-5.3-codex</div><div class="tokens"><span>↑ 3.5M</span><span>⚡ 35M</span><span>↓ 178K</span></div></div>
+                  <div class="cost">$14.76</div>
+                </div>
+                <div class="row">
+                  <div><div class="name">gpt-5.4</div><div class="tokens"><span>↑ 23M</span><span>⚡ 376M</span><span>↓ 1.2M</span></div></div>
+                  <div class="cost">$169.45</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="caption">最像预算控制面板。更强调“还剩多少”和风险状态，适合把 quota 主要理解成 spending cap。</div>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>
