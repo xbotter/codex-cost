@@ -5,6 +5,9 @@ import "@fontsource/nunito/latin-800.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toPng } from "html-to-image";
+import cameraIcon from "lucide-static/icons/camera.svg?raw";
+import pinIcon from "lucide-static/icons/pin.svg?raw";
+import pinOffIcon from "lucide-static/icons/pin-off.svg?raw";
 
 type TokenUsage = {
   input_tokens: number;
@@ -24,6 +27,17 @@ type CostBreakdown = {
   cost_sparkline: number[];
 };
 
+type QuotaMode = "target" | "cap";
+
+type QuotaSnapshot = {
+  mode: QuotaMode;
+  amount_usd: number;
+  progress_ratio: number;
+  primary_label: string;
+  status_label: string;
+  is_error_state: boolean;
+};
+
 type AppSnapshot = {
   provider_id: string;
   date: string;
@@ -36,13 +50,17 @@ type AppSnapshot = {
   pricing_updated_at: string | null;
   used_stale_pricing: boolean;
   last_refreshed_at: string;
+  quota: QuotaSnapshot | null;
+  dashboard_always_on_top: boolean;
   error_message: string | null;
 };
 
 let summaryEl: HTMLElement | null;
 let summaryTrendEl: HTMLElement | null;
 let totalsEl: HTMLElement | null;
+let quotaRowEl: HTMLElement | null;
 let modelsEl: HTMLElement | null;
+let pinButtonEl: HTMLButtonElement | null;
 let shareButtonEl: HTMLButtonElement | null;
 let toastEl: HTMLElement | null;
 let toastTimer: number | undefined;
@@ -85,28 +103,66 @@ function iconMarkup(kind: "input" | "cached" | "output") {
   `;
 }
 
-function sparklineMarkup(points: number[]) {
+function buildPath(points: number[], width: number, height: number, startIndex: number, endIndex: number) {
+  if (points.length === 0 || endIndex < startIndex) {
+    return "";
+  }
+
+  const baselineY = height - 3;
+  const maxValue = Math.max(...points, 0);
+  const stepX = points.length > 1 ? width / (points.length - 1) : width;
+
+  return points
+    .slice(startIndex, endIndex + 1)
+    .map((value, offset) => {
+      const index = startIndex + offset;
+      const x = Number((index * stepX).toFixed(2));
+      const y = maxValue > 0 ? Number((baselineY - (value / maxValue) * (height - 6)).toFixed(2)) : baselineY;
+      return `${offset === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+}
+
+function currentHalfHourBucket(timestamp: string) {
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return 47;
+  }
+
+  const bucket = parsed.getHours() * 2 + (parsed.getMinutes() >= 30 ? 1 : 0);
+  return Math.max(0, Math.min(47, bucket));
+}
+
+function sparklineMarkup(points: number[], currentBucket: number) {
   const width = 136;
   const height = 28;
   const baselineColor = "rgba(244, 239, 229, 0.05)";
   const lineColor = "rgba(243, 169, 75, 0.52)";
   const values = points.length ? points : [0];
-  const maxValue = Math.max(...values, 0);
-  const stepX = values.length > 1 ? width / (values.length - 1) : width;
   const baselineY = height - 3;
-
-  const path = values
-    .map((value, index) => {
-      const x = Number((index * stepX).toFixed(2));
-      const y = maxValue > 0 ? Number((baselineY - (value / maxValue) * (height - 6)).toFixed(2)) : baselineY;
-      return `${index === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+  const clampedBucket = Math.max(0, Math.min(values.length - 1, currentBucket));
+  const stepX = values.length > 1 ? width / (values.length - 1) : width;
+  const currentX = Number((clampedBucket * stepX).toFixed(2));
+  const solidPath = buildPath(values, width, height, 0, clampedBucket);
+  const dashedPath =
+    clampedBucket < values.length - 1
+      ? buildPath(values, width, height, clampedBucket, values.length - 1)
+      : "";
 
   return `
     <svg class="model-sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
-      <path d="M 0 ${baselineY} L ${width} ${baselineY}" fill="none" stroke="${baselineColor}" stroke-width="1"></path>
-      <path d="${path}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="M 0 ${baselineY} L ${currentX} ${baselineY}" fill="none" stroke="${baselineColor}" stroke-width="1"></path>
+      ${
+        clampedBucket < values.length - 1
+          ? `<path d="M ${currentX} ${baselineY} L ${width} ${baselineY}" fill="none" stroke="${baselineColor}" stroke-width="1" stroke-linecap="round" stroke-dasharray="2.5 3.5"></path>`
+          : ""
+      }
+      <path d="${solidPath}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+      ${
+        dashedPath
+          ? `<path d="${dashedPath}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.5 3.5"></path>`
+          : ""
+      }
     </svg>
   `;
 }
@@ -117,6 +173,18 @@ function billableInputTokens(usage: TokenUsage) {
 
 function totalOutputTokens(usage: TokenUsage) {
   return usage.output_tokens + usage.reasoning_output_tokens;
+}
+
+function normalizeLucide(svg: string) {
+  return svg.replace("<svg ", '<svg fill="none" aria-hidden="true" ');
+}
+
+function pinIconMarkup(pinned: boolean) {
+  return normalizeLucide(pinned ? pinIcon : pinOffIcon);
+}
+
+function screenshotIconMarkup() {
+  return normalizeLucide(cameraIcon);
 }
 
 function showToast(message: string, kind: "success" | "error" = "success") {
@@ -157,7 +225,7 @@ async function copyDashboardSnapshot() {
       backgroundColor: "#171a1f",
       width: Math.ceil(rect.width) + exportPadding * 2,
       height: Math.ceil(rect.height) + exportPadding * 2,
-      filter: (node) => !(node instanceof HTMLElement && node.id === "status"),
+      filter: (node: Node) => !(node instanceof HTMLElement && node.id === "status"),
       style: {
         boxSizing: "border-box",
         padding: `${exportPadding}px`,
@@ -181,12 +249,43 @@ async function copyDashboardSnapshot() {
 }
 
 function render(snapshot: AppSnapshot) {
+  const currentBucket = currentHalfHourBucket(snapshot.last_refreshed_at);
+
   if (summaryEl) {
     summaryEl.textContent = usd(snapshot.total_cost_usd);
   }
 
+  if (pinButtonEl) {
+    pinButtonEl.innerHTML = pinIconMarkup(snapshot.dashboard_always_on_top);
+    pinButtonEl.classList.toggle("is-active", snapshot.dashboard_always_on_top);
+    pinButtonEl.setAttribute(
+      "aria-label",
+      snapshot.dashboard_always_on_top ? "Disable always on top" : "Enable always on top",
+    );
+    pinButtonEl.title = snapshot.dashboard_always_on_top ? "Always on top is on" : "Keep window on top";
+  }
+
   if (summaryTrendEl) {
-    summaryTrendEl.innerHTML = sparklineMarkup(snapshot.total_cost_sparkline);
+    summaryTrendEl.innerHTML = sparklineMarkup(snapshot.total_cost_sparkline, currentBucket);
+  }
+
+  if (quotaRowEl) {
+    if (!snapshot.quota) {
+      quotaRowEl.hidden = true;
+      quotaRowEl.innerHTML = "";
+    } else {
+      const progress = `${Math.max(0, Math.min(snapshot.quota.progress_ratio, 1)) * 100}%`;
+      quotaRowEl.hidden = false;
+      quotaRowEl.innerHTML = `
+        <div class="quota-copy">
+          <strong>${snapshot.quota.primary_label}</strong>
+          <span>${snapshot.quota.status_label}</span>
+        </div>
+        <div class="quota-progress${snapshot.quota.is_error_state ? " is-error" : ""}">
+          <div class="quota-progress-fill" style="width: ${snapshot.quota.is_error_state ? "0%" : progress};"></div>
+        </div>
+      `;
+    }
   }
 
   if (totalsEl) {
@@ -228,7 +327,7 @@ function render(snapshot: AppSnapshot) {
           <article class="model-card">
             <div class="model-row">
               <h3>${item.model_name}</h3>
-              <div class="model-trend">${sparklineMarkup(item.cost_sparkline)}</div>
+              <div class="model-trend">${sparklineMarkup(item.cost_sparkline, currentBucket)}</div>
               <strong>${usd(item.total_cost_usd)}</strong>
             </div>
             <div class="model-metrics">
@@ -256,9 +355,28 @@ window.addEventListener("DOMContentLoaded", async () => {
   summaryEl = document.querySelector("#summary");
   summaryTrendEl = document.querySelector("#summary-trend");
   totalsEl = document.querySelector("#totals");
+  quotaRowEl = document.querySelector("#quota-row");
   modelsEl = document.querySelector("#models");
+  pinButtonEl = document.querySelector("#pin-button");
   shareButtonEl = document.querySelector("#share-button");
   toastEl = document.querySelector("#toast");
+
+  if (shareButtonEl) {
+    shareButtonEl.innerHTML = screenshotIconMarkup();
+  }
+
+  pinButtonEl?.addEventListener("click", async () => {
+    pinButtonEl!.disabled = true;
+    try {
+      const snapshot = await invoke<AppSnapshot>("toggle_dashboard_always_on_top");
+      render(snapshot);
+    } catch (error) {
+      console.error(error);
+      showToast("Toggle failed", "error");
+    } finally {
+      pinButtonEl!.disabled = false;
+    }
+  });
 
   shareButtonEl?.addEventListener("click", () => {
     void copyDashboardSnapshot();

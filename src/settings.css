@@ -1,0 +1,238 @@
+:root {
+  color-scheme: light dark;
+  font-family: "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --bg: #f5f5f7;
+  --panel: rgba(255, 255, 255, 0.86);
+  --border: rgba(17, 24, 39, 0.10);
+  --text: #111827;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.12);
+  --field: rgba(255, 255, 255, 0.88);
+  --field-border: rgba(17, 24, 39, 0.12);
+  --danger: #c2410c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b;
+    --panel: rgba(32, 34, 39, 0.92);
+    --border: rgba(255, 255, 255, 0.10);
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --accent: #60a5fa;
+    --accent-soft: rgba(96, 165, 250, 0.18);
+    --field: rgba(255, 255, 255, 0.04);
+    --field-border: rgba(255, 255, 255, 0.10);
+    --danger: #fdba74;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  min-height: 100vh;
+}
+
+.settings-shell {
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+}
+
+.settings-header {
+  display: grid;
+  gap: 4px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.settings-copy {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.settings-form {
+  display: grid;
+  gap: 14px;
+}
+
+.field-group {
+  display: grid;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+
+.toggle-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.toggle-copy strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.toggle-copy span {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.toggle {
+  appearance: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(120, 128, 140, 0.28);
+  position: relative;
+  transition: background 140ms ease;
+  cursor: pointer;
+}
+
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 140ms ease;
+}
+
+.toggle:checked {
+  background: var(--accent);
+}
+
+.toggle:checked::after {
+  transform: translateX(16px);
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.segment {
+  position: relative;
+}
+
+.segment input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.segment span,
+.text-input {
+  border: 1px solid var(--field-border);
+  background: var(--field);
+}
+
+.segment span {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 10px;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.segment input:checked + span {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.text-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+}
+
+.text-input:focus,
+.toggle:focus,
+.segment input:focus + span,
+.save-button:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  outline-offset: 1px;
+}
+
+.form-status {
+  min-height: 1rem;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.form-status.is-error {
+  color: var(--danger);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.save-button {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 10px;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.save-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}

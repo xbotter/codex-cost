@@ -4,14 +4,19 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Local;
 
-use crate::domain::{AppSnapshot, CostBreakdown, DailyUsage, PriceQuote, TokenUsage};
+use crate::domain::{
+    AppSnapshot, CostBreakdown, DailyUsage, DashboardSettings, PriceQuote, QuotaMode,
+    QuotaSettings, QuotaSnapshot, TokenUsage,
+};
 use crate::pricing::{find_price_quote, normalize_model_for_pricing, PricingCache, PricingStore};
 use crate::providers::{codex::CodexUsageProvider, UsageProvider};
+use crate::settings::SettingsStore;
 
 #[derive(Clone)]
 pub struct UsageAppService {
     providers: Vec<Arc<dyn UsageProvider>>,
     pricing_store: PricingStore,
+    settings_store: SettingsStore,
 }
 
 pub fn format_token_count(value: u64) -> String {
@@ -38,33 +43,69 @@ impl UsageAppService {
     pub fn new() -> Result<Self> {
         let codex_root = CodexUsageProvider::default_root()?;
         let pricing_cache = PricingStore::default_cache_path()?;
+        let settings_path = SettingsStore::default_config_path()?;
 
         Ok(Self {
             providers: vec![Arc::new(CodexUsageProvider::new(codex_root))],
             pricing_store: PricingStore::new(pricing_cache, Duration::from_secs(60 * 60 * 24)),
+            settings_store: SettingsStore::new(settings_path),
         })
     }
 
     pub fn refresh(&self, force_pricing_refresh: bool) -> Result<AppSnapshot> {
         let today = Local::now().date_naive();
+        let quota_settings = self.settings_store.load_quota_settings()?;
+        let dashboard_settings = self.settings_store.load_dashboard_settings()?;
         let provider = self
             .providers
             .first()
             .context("no usage providers configured")?;
-        let usage = provider.collect_daily_usage(today)?;
+        let usage = match provider.collect_daily_usage(today) {
+            Ok(usage) => usage,
+            Err(error) => {
+                return Ok(build_error_snapshot_with_quota(
+                    format!("{error:#}"),
+                    &quota_settings,
+                    dashboard_settings.always_on_top,
+                ))
+            }
+        };
         let pricing = self.pricing_store.load(force_pricing_refresh)?;
 
         Ok(build_app_snapshot(
             usage,
+            &quota_settings,
+            dashboard_settings.always_on_top,
             &pricing.cache,
             pricing.used_stale_cache,
             Local::now(),
         ))
     }
+
+    pub fn load_quota_settings(&self) -> Result<QuotaSettings> {
+        self.settings_store.load_quota_settings()
+    }
+
+    pub fn save_quota_settings(&self, settings: &QuotaSettings) -> Result<QuotaSettings> {
+        self.settings_store.save_quota_settings(settings)
+    }
+
+    pub fn load_dashboard_settings(&self) -> Result<DashboardSettings> {
+        self.settings_store.load_dashboard_settings()
+    }
+
+    pub fn save_dashboard_settings(
+        &self,
+        settings: &DashboardSettings,
+    ) -> Result<DashboardSettings> {
+        self.settings_store.save_dashboard_settings(settings)
+    }
 }
 
 fn build_app_snapshot(
     usage: DailyUsage,
+    quota_settings: &QuotaSettings,
+    dashboard_always_on_top: bool,
     pricing: &PricingCache,
     used_stale_pricing: bool,
     now: chrono::DateTime<Local>,
@@ -125,7 +166,64 @@ fn build_app_snapshot(
         pricing_updated_at: Some(pricing.fetched_at.clone()),
         used_stale_pricing,
         last_refreshed_at: now.to_rfc3339(),
+        quota: build_quota_snapshot(quota_settings, total_cost_usd, false),
+        dashboard_always_on_top,
         error_message: None,
+    }
+}
+
+fn build_quota_snapshot(
+    settings: &QuotaSettings,
+    total_cost_usd: f64,
+    is_error_state: bool,
+) -> Option<QuotaSnapshot> {
+    if !settings.enabled {
+        return None;
+    }
+
+    let progress_ratio = if settings.amount_usd > 0.0 {
+        (total_cost_usd / settings.amount_usd).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let amount_label = format_usd_label(settings.amount_usd);
+    let primary_label = match settings.mode {
+        QuotaMode::Target => format!("Target {amount_label}"),
+        QuotaMode::Cap => format!("Cap {amount_label}"),
+    };
+
+    let status_label = if is_error_state {
+        "Unavailable".to_string()
+    } else {
+        match settings.mode {
+            QuotaMode::Target => format!("{:.0}% reached", progress_ratio * 100.0),
+            QuotaMode::Cap => {
+                let remaining = settings.amount_usd - total_cost_usd;
+                if remaining >= 0.0 {
+                    format!("${remaining:.2} left")
+                } else {
+                    format!("Over by ${:.2}", remaining.abs())
+                }
+            }
+        }
+    };
+
+    Some(QuotaSnapshot {
+        mode: settings.mode.clone(),
+        amount_usd: settings.amount_usd,
+        progress_ratio,
+        primary_label,
+        status_label,
+        is_error_state,
+    })
+}
+
+fn format_usd_label(amount: f64) -> String {
+    if (amount.fract()).abs() < f64::EPSILON {
+        format!("${amount:.0}")
+    } else {
+        format!("${amount:.2}")
     }
 }
 
@@ -151,6 +249,14 @@ fn total_cost_for_usage(usage: &TokenUsage, price_quote: &PriceQuote) -> f64 {
 }
 
 pub fn build_error_snapshot(message: impl Into<String>) -> AppSnapshot {
+    build_error_snapshot_with_quota(message, &QuotaSettings::default(), false)
+}
+
+pub fn build_error_snapshot_with_quota(
+    message: impl Into<String>,
+    quota_settings: &QuotaSettings,
+    dashboard_always_on_top: bool,
+) -> AppSnapshot {
     let now = Local::now();
     let message = message.into();
 
@@ -166,6 +272,8 @@ pub fn build_error_snapshot(message: impl Into<String>) -> AppSnapshot {
         pricing_updated_at: None,
         used_stale_pricing: false,
         last_refreshed_at: now.to_rfc3339(),
+        quota: build_quota_snapshot(quota_settings, 0.0, true),
+        dashboard_always_on_top,
         error_message: Some(message),
     }
 }
@@ -176,10 +284,10 @@ mod tests {
 
     use chrono::{Local, TimeZone};
 
-    use crate::domain::{DailyUsage, TokenUsage};
+    use crate::domain::{DailyUsage, QuotaMode, QuotaSettings, TokenUsage};
     use crate::pricing::{LiteLlmPrice, PricingCache};
 
-    use super::build_app_snapshot;
+    use super::{build_app_snapshot, build_error_snapshot_with_quota};
 
     #[test]
     fn build_app_snapshot_prices_cached_input_only_once() {
@@ -222,6 +330,8 @@ mod tests {
 
         let snapshot = build_app_snapshot(
             usage,
+            &QuotaSettings::default(),
+            false,
             &pricing,
             false,
             Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
@@ -275,6 +385,8 @@ mod tests {
 
         let snapshot = build_app_snapshot(
             usage,
+            &QuotaSettings::default(),
+            false,
             &pricing,
             false,
             Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
@@ -339,6 +451,8 @@ mod tests {
 
         let snapshot = build_app_snapshot(
             usage,
+            &QuotaSettings::default(),
+            false,
             &pricing,
             false,
             Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
@@ -434,6 +548,8 @@ mod tests {
 
         let snapshot = build_app_snapshot(
             usage,
+            &QuotaSettings::default(),
+            false,
             &pricing,
             false,
             Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
@@ -443,5 +559,55 @@ mod tests {
         assert!((snapshot.total_cost_sparkline[0] - 0.000272).abs() < 1e-9);
         assert!((snapshot.total_cost_sparkline[1] - 0.0000245).abs() < 1e-9);
         assert_eq!(snapshot.total_cost_sparkline[2], 0.0);
+    }
+
+    #[test]
+    fn build_app_snapshot_creates_target_quota_labels() {
+        let usage = DailyUsage {
+            provider_id: "codex".to_string(),
+            date: "2026-03-17".to_string(),
+            model_breakdown: vec![],
+            totals: TokenUsage::default(),
+        };
+        let pricing = PricingCache {
+            fetched_at: "2026-03-17T00:00:00Z".to_string(),
+            source_url: "test".to_string(),
+            prices: HashMap::new(),
+        };
+        let quota = QuotaSettings {
+            enabled: true,
+            mode: QuotaMode::Target,
+            amount_usd: 250.0,
+        };
+
+        let snapshot = build_app_snapshot(
+            usage,
+            &quota,
+            false,
+            &pricing,
+            false,
+            Local.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+        );
+
+        let rendered = snapshot.quota.expect("quota should render");
+        assert_eq!(rendered.primary_label, "Target $250");
+        assert_eq!(rendered.status_label, "0% reached");
+        assert!(!rendered.is_error_state);
+    }
+
+    #[test]
+    fn build_error_snapshot_with_quota_renders_unavailable_state() {
+        let quota = QuotaSettings {
+            enabled: true,
+            mode: QuotaMode::Cap,
+            amount_usd: 250.0,
+        };
+
+        let snapshot = build_error_snapshot_with_quota("provider failed", &quota, false);
+
+        let rendered = snapshot.quota.expect("quota should render");
+        assert_eq!(rendered.primary_label, "Cap $250");
+        assert_eq!(rendered.status_label, "Unavailable");
+        assert!(rendered.is_error_state);
     }
 }

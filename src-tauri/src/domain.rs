@@ -1,5 +1,44 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaMode {
+    Target,
+    Cap,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuotaSettings {
+    pub enabled: bool,
+    pub mode: QuotaMode,
+    pub amount_usd: f64,
+}
+
+impl Default for QuotaSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: QuotaMode::Target,
+            amount_usd: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DashboardSettings {
+    pub always_on_top: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuotaSnapshot {
+    pub mode: QuotaMode,
+    pub amount_usd: f64,
+    pub progress_ratio: f64,
+    pub primary_label: String,
+    pub status_label: String,
+    pub is_error_state: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
@@ -98,6 +137,8 @@ pub struct AppSnapshot {
     pub pricing_updated_at: Option<String>,
     pub used_stale_pricing: bool,
     pub last_refreshed_at: String,
+    pub quota: Option<QuotaSnapshot>,
+    pub dashboard_always_on_top: bool,
     pub error_message: Option<String>,
 }
 
@@ -105,9 +146,71 @@ pub struct AppSnapshot {
 mod tests {
     use std::path::Path;
 
-    use super::{TokenUsage, UsageSnapshot};
+    use super::{
+        DashboardSettings, QuotaMode, QuotaSettings, QuotaSnapshot, TokenUsage, UsageSnapshot,
+    };
     use crate::pricing::normalize_model_for_pricing;
     use crate::providers::codex::parse_session_jsonl;
+
+    #[test]
+    fn quota_settings_default_to_disabled_target_mode() {
+        let settings = QuotaSettings::default();
+
+        assert!(!settings.enabled);
+        assert_eq!(settings.mode, QuotaMode::Target);
+        assert_eq!(settings.amount_usd, 0.0);
+    }
+
+    #[test]
+    fn dashboard_settings_default_to_not_always_on_top() {
+        let settings = DashboardSettings::default();
+
+        assert!(!settings.always_on_top);
+    }
+
+    #[test]
+    fn quota_settings_serde_round_trip_supports_target_and_cap_modes() {
+        let target = QuotaSettings {
+            enabled: true,
+            mode: QuotaMode::Target,
+            amount_usd: 250.0,
+        };
+        let cap = QuotaSettings {
+            enabled: true,
+            mode: QuotaMode::Cap,
+            amount_usd: 125.5,
+        };
+
+        let target_json = serde_json::to_string(&target).expect("target should serialize");
+        let cap_json = serde_json::to_string(&cap).expect("cap should serialize");
+
+        assert_eq!(
+            serde_json::from_str::<QuotaSettings>(&target_json).expect("target should deserialize"),
+            target
+        );
+        assert_eq!(
+            serde_json::from_str::<QuotaSettings>(&cap_json).expect("cap should deserialize"),
+            cap
+        );
+    }
+
+    #[test]
+    fn quota_snapshot_serde_round_trip_preserves_rendered_fields() {
+        let snapshot = QuotaSnapshot {
+            mode: QuotaMode::Cap,
+            amount_usd: 250.0,
+            progress_ratio: 0.737,
+            primary_label: "Cap $250".to_string(),
+            status_label: "$65.78 left".to_string(),
+            is_error_state: false,
+        };
+
+        let json = serde_json::to_string(&snapshot).expect("quota snapshot should serialize");
+        let decoded = serde_json::from_str::<QuotaSnapshot>(&json)
+            .expect("quota snapshot should deserialize");
+
+        assert_eq!(decoded, snapshot);
+    }
 
     #[test]
     fn parse_session_jsonl_aggregates_token_count_deltas_for_today() {

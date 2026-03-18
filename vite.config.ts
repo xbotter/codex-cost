@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
@@ -10,6 +11,14 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        settings: resolve(__dirname, "settings.html"),
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

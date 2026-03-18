@@ -1,6 +1,6 @@
 [package]
 name = "codex-cost"
-version = "0.1.3"
+version = "0.1.4"
 description = "A cross-platform Tauri tray app that estimates daily Codex cost from local usage logs."
 authors = ["xbotter"]
 edition = "2021"

@@ -2,6 +2,7 @@ mod domain;
 mod pricing;
 mod providers;
 mod service;
+mod settings;
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -12,7 +13,7 @@ use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Local};
-use domain::AppSnapshot;
+use domain::{AppSnapshot, DashboardSettings, QuotaSettings};
 use service::{
     billable_input_tokens, build_error_snapshot, format_token_count, total_output_tokens,
     UsageAppService,
@@ -21,15 +22,15 @@ use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::WindowEvent;
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const TRAY_ID: &str = "usage-tray";
 const MENU_STATUS: &str = "status";
 const MENU_TOKENS: &str = "tokens";
 const MENU_UPDATED: &str = "updated";
 const MENU_REFRESH: &str = "refresh";
-const MENU_REFRESH_PRICING: &str = "refresh_pricing";
 const MENU_SHOW: &str = "show";
+const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
 
 struct AppState {
@@ -56,6 +57,58 @@ impl AppState {
 #[tauri::command]
 fn get_snapshot(state: tauri::State<'_, AppState>) -> AppSnapshot {
     state.snapshot.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_quota_settings(state: tauri::State<'_, AppState>) -> Result<QuotaSettings, String> {
+    state
+        .service
+        .load_quota_settings()
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn save_quota_settings(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    settings: QuotaSettings,
+) -> Result<QuotaSettings, String> {
+    let saved = state
+        .service
+        .save_quota_settings(&settings)
+        .map_err(|error| format!("{error:#}"))?;
+
+    let snapshot = refresh_state(&app, &state, false);
+    let _ = emit_snapshot(&app, &snapshot);
+
+    Ok(saved)
+}
+
+#[tauri::command]
+fn toggle_dashboard_always_on_top(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let current = state
+        .service
+        .load_dashboard_settings()
+        .map_err(|error| format!("{error:#}"))?;
+    let updated = DashboardSettings {
+        always_on_top: !current.always_on_top,
+    };
+
+    state
+        .service
+        .save_dashboard_settings(&updated)
+        .map_err(|error| format!("{error:#}"))?;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(updated.always_on_top);
+    }
+
+    let snapshot = refresh_state(&app, &state, false);
+    let _ = emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -108,6 +161,9 @@ pub fn run() {
         .setup(|app| {
             build_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
+                if let Ok(settings) = app.state::<AppState>().service.load_dashboard_settings() {
+                    let _ = window.set_always_on_top(settings.always_on_top);
+                }
                 let _ = window.hide();
             }
             spawn_initial_refresh(app.handle().clone());
@@ -116,20 +172,23 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_quota_settings,
             refresh_snapshot,
+            save_quota_settings,
+            toggle_dashboard_always_on_top,
             copy_dashboard_image_to_clipboard
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|_app, _event| {
             #[cfg(target_os = "macos")]
-            if let RunEvent::Reopen {
+            if let tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..
-            } = event
+            } = _event
             {
                 if !has_visible_windows {
-                    show_dashboard(app);
+                    show_dashboard(_app);
                 }
             }
         });
@@ -140,15 +199,9 @@ fn build_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
     let tokens_item = MenuItem::with_id(app, MENU_TOKENS, "Tokens: --", false, None::<&str>)?;
     let updated_item = MenuItem::with_id(app, MENU_UPDATED, "Updated: --", false, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let refresh_item = MenuItem::with_id(app, MENU_REFRESH, "Refresh now", true, None::<&str>)?;
-    let refresh_pricing_item = MenuItem::with_id(
-        app,
-        MENU_REFRESH_PRICING,
-        "Refresh pricing",
-        true,
-        None::<&str>,
-    )?;
+    let refresh_item = MenuItem::with_id(app, MENU_REFRESH, "Refresh", true, None::<&str>)?;
     let show_item = MenuItem::with_id(app, MENU_SHOW, "Open dashboard", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
 
     let menu = MenuBuilder::new(app)
@@ -158,8 +211,8 @@ fn build_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
             &updated_item,
             &separator,
             &refresh_item,
-            &refresh_pricing_item,
             &show_item,
+            &settings_item,
             &quit_item,
         ])
         .build()?;
@@ -194,13 +247,11 @@ fn build_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                 let snapshot = refresh_state(app, &state, false);
                 let _ = emit_snapshot(app, &snapshot);
             }
-            MENU_REFRESH_PRICING => {
-                let state = app.state::<AppState>();
-                let snapshot = refresh_state(app, &state, true);
-                let _ = emit_snapshot(app, &snapshot);
-            }
             MENU_SHOW => {
                 show_dashboard(app);
+            }
+            MENU_SETTINGS => {
+                show_settings(app);
             }
             MENU_QUIT => app.exit(0),
             _ => {}
@@ -351,6 +402,8 @@ fn build_loading_snapshot() -> AppSnapshot {
         pricing_updated_at: None,
         used_stale_pricing: false,
         last_refreshed_at: now.to_rfc3339(),
+        quota: None,
+        dashboard_always_on_top: false,
         error_message: None,
     }
 }
@@ -372,6 +425,29 @@ fn show_dashboard(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+fn show_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        let _ = window.emit("settings-window-opened", ());
+        return;
+    }
+
+    if let Ok(window) =
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+            .title("codex-cost settings")
+            .inner_size(460.0, 380.0)
+            .min_inner_size(460.0, 380.0)
+            .resizable(true)
+            .visible(true)
+            .build()
+    {
+        let _ = window.set_focus();
+        let _ = window.emit("settings-window-opened", ());
     }
 }
 
