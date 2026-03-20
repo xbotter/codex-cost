@@ -2,6 +2,7 @@ use chrono::NaiveDate;
 
 use crate::domain::DailyUsage;
 
+pub mod claude;
 pub mod codex;
 
 pub trait UsageProvider: Send + Sync {

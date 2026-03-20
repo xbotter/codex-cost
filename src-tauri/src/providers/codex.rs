@@ -52,6 +52,8 @@ impl UsageProvider for CodexUsageProvider {
                 date: date.to_string(),
                 model_breakdown: Vec::new(),
                 totals: TokenUsage::default(),
+                skipped_log_lines: 0,
+                skipped_log_files: 0,
             });
         }
 
@@ -107,6 +109,8 @@ impl UsageProvider for CodexUsageProvider {
             date: date.to_string(),
             model_breakdown,
             totals,
+            skipped_log_lines: 0,
+            skipped_log_files: 0,
         })
     }
 }
@@ -167,6 +171,7 @@ pub fn parse_session_jsonl(
                 .get("cached_input_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
+            cache_creation_input_tokens: 0,
             output_tokens: total_usage
                 .get("output_tokens")
                 .and_then(Value::as_u64)

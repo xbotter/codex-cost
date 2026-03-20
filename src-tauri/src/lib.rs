@@ -15,8 +15,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Local};
 use domain::{AppSnapshot, DashboardSettings, QuotaSettings};
 use service::{
-    billable_input_tokens, build_error_snapshot, format_token_count, total_output_tokens,
-    UsageAppService,
+    billable_input_tokens, build_error_snapshot, format_token_count, provider_display_name,
+    total_output_tokens, UsageAppService,
 };
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
@@ -44,9 +44,10 @@ struct AppState {
 impl AppState {
     fn new() -> Self {
         let service = UsageAppService::new().expect("failed to initialize service");
+        let dashboard_settings = service.load_dashboard_settings().unwrap_or_default();
         Self {
             service: Arc::new(service),
-            snapshot: Arc::new(Mutex::new(build_loading_snapshot())),
+            snapshot: Arc::new(Mutex::new(build_loading_snapshot(&dashboard_settings))),
             status_item: Arc::new(Mutex::new(None)),
             tokens_item: Arc::new(Mutex::new(None)),
             updated_item: Arc::new(Mutex::new(None)),
@@ -57,6 +58,14 @@ impl AppState {
 #[tauri::command]
 fn get_snapshot(state: tauri::State<'_, AppState>) -> AppSnapshot {
     state.snapshot.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_dashboard_settings(state: tauri::State<'_, AppState>) -> Result<DashboardSettings, String> {
+    state
+        .service
+        .load_dashboard_settings()
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -85,6 +94,34 @@ fn save_quota_settings(
 }
 
 #[tauri::command]
+fn save_dashboard_settings(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    settings: DashboardSettings,
+) -> Result<DashboardSettings, String> {
+    let saved = state
+        .service
+        .save_dashboard_settings(&settings)
+        .map_err(|error| format!("{error:#}"))?;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(saved.always_on_top);
+    }
+
+    {
+        let mut snapshot = state.snapshot.lock().unwrap();
+        snapshot.provider_id = saved.current_provider.clone();
+        snapshot.enabled_provider_ids = saved.enabled_providers.clone();
+        snapshot.dashboard_always_on_top = saved.always_on_top;
+    }
+
+    let snapshot = refresh_state(&app, &state, false);
+    let _ = emit_snapshot(&app, &snapshot);
+
+    Ok(saved)
+}
+
+#[tauri::command]
 fn toggle_dashboard_always_on_top(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -95,6 +132,8 @@ fn toggle_dashboard_always_on_top(
         .map_err(|error| format!("{error:#}"))?;
     let updated = DashboardSettings {
         always_on_top: !current.always_on_top,
+        current_provider: current.current_provider,
+        enabled_providers: current.enabled_providers,
     };
 
     state
@@ -106,9 +145,47 @@ fn toggle_dashboard_always_on_top(
         let _ = window.set_always_on_top(updated.always_on_top);
     }
 
+    {
+        let mut snapshot = state.snapshot.lock().unwrap();
+        snapshot.provider_id = updated.current_provider.clone();
+        snapshot.enabled_provider_ids = updated.enabled_providers.clone();
+        snapshot.dashboard_always_on_top = updated.always_on_top;
+    }
+
     let snapshot = refresh_state(&app, &state, false);
     let _ = emit_snapshot(&app, &snapshot);
     Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_current_provider(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> Result<AppSnapshot, String> {
+    if !matches!(provider_id.as_str(), "codex" | "claude") {
+        return Err(format!("unsupported provider: {provider_id}"));
+    }
+
+    let current = state
+        .service
+        .load_dashboard_settings()
+        .map_err(|error| format!("{error:#}"))?;
+    if !current
+        .enabled_providers
+        .iter()
+        .any(|enabled| enabled == &provider_id)
+    {
+        return Err(format!("provider is disabled: {provider_id}"));
+    }
+    let updated = DashboardSettings {
+        always_on_top: current.always_on_top,
+        current_provider: provider_id,
+        enabled_providers: current.enabled_providers,
+    };
+
+    let _ = save_dashboard_settings(app.clone(), state, updated)?;
+    Ok(app.state::<AppState>().snapshot.lock().unwrap().clone())
 }
 
 #[tauri::command]
@@ -118,6 +195,8 @@ fn refresh_snapshot(
     force_pricing_refresh: bool,
 ) -> Result<AppSnapshot, String> {
     let current_snapshot = state.snapshot.lock().unwrap().clone();
+    let current_provider_id = current_snapshot.provider_id.clone();
+    let enabled_provider_ids = current_snapshot.enabled_provider_ids.clone();
     let service = state.service.clone();
     let snapshot_store = state.snapshot.clone();
     let status_item = state.status_item.clone();
@@ -127,7 +206,11 @@ fn refresh_snapshot(
     thread::spawn(move || {
         let snapshot = match service.refresh(force_pricing_refresh) {
             Ok(snapshot) => snapshot,
-            Err(error) => build_error_snapshot(format!("{error:#}")),
+            Err(error) => build_loading_error_snapshot(
+                &current_provider_id,
+                enabled_provider_ids.clone(),
+                format!("{error:#}"),
+            ),
         };
 
         *snapshot_store.lock().unwrap() = snapshot.clone();
@@ -172,10 +255,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_dashboard_settings,
             get_quota_settings,
             refresh_snapshot,
+            save_dashboard_settings,
             save_quota_settings,
             toggle_dashboard_always_on_top,
+            set_current_provider,
             copy_dashboard_image_to_clipboard
         ])
         .build(tauri::generate_context!())
@@ -281,9 +367,15 @@ fn spawn_initial_refresh(app: AppHandle) {
     let updated_item = state.updated_item.clone();
 
     thread::spawn(move || {
+        let provider_id = snapshot_store.lock().unwrap().provider_id.clone();
+        let enabled_provider_ids = snapshot_store.lock().unwrap().enabled_provider_ids.clone();
         let snapshot = match service.refresh(false) {
             Ok(snapshot) => snapshot,
-            Err(error) => build_error_snapshot(format!("{error:#}")),
+            Err(error) => build_loading_error_snapshot(
+                &provider_id,
+                enabled_provider_ids,
+                format!("{error:#}"),
+            ),
         };
 
         *snapshot_store.lock().unwrap() = snapshot.clone();
@@ -330,9 +422,16 @@ fn refresh_state(
     state: &tauri::State<'_, AppState>,
     force_pricing_refresh: bool,
 ) -> AppSnapshot {
+    let current_snapshot = state.snapshot.lock().unwrap().clone();
+    let current_provider_id = current_snapshot.provider_id;
+    let enabled_provider_ids = current_snapshot.enabled_provider_ids;
     let snapshot = match state.service.refresh(force_pricing_refresh) {
         Ok(snapshot) => snapshot,
-        Err(error) => build_error_snapshot(format!("{error:#}")),
+        Err(error) => build_loading_error_snapshot(
+            &current_provider_id,
+            enabled_provider_ids,
+            format!("{error:#}"),
+        ),
     };
 
     *state.snapshot.lock().unwrap() = snapshot.clone();
@@ -360,7 +459,11 @@ fn apply_snapshot_to_tray(
     }
 
     if let Some(item) = status_item.lock().unwrap().as_ref() {
-        item.set_text(format!("Today: ${:.2}", snapshot.total_cost_usd))?;
+        item.set_text(format!(
+            "{}: ${:.2}",
+            provider_display_name(&snapshot.provider_id),
+            snapshot.total_cost_usd
+        ))?;
     }
 
     if let Some(item) = tokens_item.lock().unwrap().as_ref() {
@@ -387,14 +490,16 @@ fn apply_snapshot_to_tray(
     Ok(())
 }
 
-fn build_loading_snapshot() -> AppSnapshot {
+fn build_loading_snapshot(settings: &DashboardSettings) -> AppSnapshot {
     let now = Local::now();
+    let provider_label = provider_display_name(&settings.current_provider);
 
     AppSnapshot {
-        provider_id: "codex".to_string(),
+        provider_id: settings.current_provider.clone(),
+        enabled_provider_ids: settings.enabled_providers.clone(),
         date: now.date_naive().to_string(),
         title: "--".to_string(),
-        tooltip: "Loading usage…".to_string(),
+        tooltip: format!("Loading {provider_label} usage…"),
         total_cost_usd: 0.0,
         total_cost_sparkline: vec![0.0; 48],
         totals: Default::default(),
@@ -404,8 +509,25 @@ fn build_loading_snapshot() -> AppSnapshot {
         last_refreshed_at: now.to_rfc3339(),
         quota: None,
         dashboard_always_on_top: false,
+        warning: None,
         error_message: None,
     }
+}
+
+fn build_loading_error_snapshot(
+    provider_id: &str,
+    enabled_provider_ids: Vec<String>,
+    message: impl Into<String>,
+) -> AppSnapshot {
+    let mut snapshot = build_error_snapshot(message);
+    snapshot.provider_id = provider_id.to_string();
+    snapshot.enabled_provider_ids = enabled_provider_ids;
+    snapshot.tooltip = format!(
+        "{} error: {}",
+        provider_display_name(provider_id),
+        snapshot.tooltip
+    );
+    snapshot
 }
 
 fn format_tray_title(snapshot: &AppSnapshot) -> String {
@@ -512,11 +634,12 @@ mod tests {
     use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
 
     use super::{build_loading_snapshot, copy_png_base64_to_clipboard, format_tray_title};
+    use crate::domain::DashboardSettings;
     use crate::service::build_error_snapshot;
 
     #[test]
     fn tray_title_shows_amount_only_for_normal_snapshots() {
-        let mut snapshot = build_loading_snapshot();
+        let mut snapshot = build_loading_snapshot(&DashboardSettings::default());
         snapshot.total_cost_usd = 12.3456;
 
         assert_eq!(format_tray_title(&snapshot), "$12.35");

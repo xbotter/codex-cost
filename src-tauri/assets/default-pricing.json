@@ -33,5 +33,42 @@
     "input_cost_per_token": 1.1e-6,
     "cache_read_input_token_cost": 2.75e-7,
     "output_cost_per_token": 4.4e-6
+  },
+  "zai/glm-5": {
+    "input_cost_per_token": 1.0e-6,
+    "cache_read_input_token_cost": 2.0e-7,
+    "cache_creation_input_token_cost": 0.0,
+    "output_cost_per_token": 3.2e-6
+  },
+  "zai/glm-4.7": {
+    "input_cost_per_token": 6.0e-7,
+    "cache_read_input_token_cost": 1.1e-7,
+    "cache_creation_input_token_cost": 0.0,
+    "output_cost_per_token": 2.2e-6
+  },
+  "zai/glm-4.5-air": {
+    "input_cost_per_token": 2.0e-7,
+    "output_cost_per_token": 1.1e-6
+  },
+  "minimax/MiniMax-M2.5": {
+    "input_cost_per_token": 3.0e-7,
+    "cache_read_input_token_cost": 3.0e-8,
+    "cache_creation_input_token_cost": 3.75e-7,
+    "output_cost_per_token": 1.2e-6
+  },
+  "moonshot/kimi-k2-0905-preview": {
+    "input_cost_per_token": 6.0e-7,
+    "cache_read_input_token_cost": 1.5e-7,
+    "output_cost_per_token": 2.5e-6
+  },
+  "moonshot/kimi-k2.5": {
+    "input_cost_per_token": 6.0e-7,
+    "cache_read_input_token_cost": 1.0e-7,
+    "output_cost_per_token": 3.0e-6
+  },
+  "moonshot/kimi-latest": {
+    "input_cost_per_token": 2.0e-6,
+    "cache_read_input_token_cost": 1.5e-7,
+    "output_cost_per_token": 5.0e-6
   }
 }

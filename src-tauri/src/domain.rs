@@ -24,9 +24,31 @@ impl Default for QuotaSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DashboardSettings {
     pub always_on_top: bool,
+    #[serde(default = "default_provider_id")]
+    pub current_provider: String,
+    #[serde(default = "default_enabled_provider_ids")]
+    pub enabled_providers: Vec<String>,
+}
+
+fn default_provider_id() -> String {
+    "codex".to_string()
+}
+
+fn default_enabled_provider_ids() -> Vec<String> {
+    vec!["codex".to_string(), "claude".to_string()]
+}
+
+impl Default for DashboardSettings {
+    fn default() -> Self {
+        Self {
+            always_on_top: false,
+            current_provider: default_provider_id(),
+            enabled_providers: default_enabled_provider_ids(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,10 +61,18 @@ pub struct QuotaSnapshot {
     pub is_error_state: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotWarning {
+    pub kind: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
 }
@@ -51,6 +81,7 @@ impl TokenUsage {
     pub fn delta_from(&self, previous: &Self) -> Self {
         let reset_detected = self.input_tokens < previous.input_tokens
             || self.cached_input_tokens < previous.cached_input_tokens
+            || self.cache_creation_input_tokens < previous.cache_creation_input_tokens
             || self.output_tokens < previous.output_tokens
             || self.reasoning_output_tokens < previous.reasoning_output_tokens;
 
@@ -61,6 +92,8 @@ impl TokenUsage {
         Self {
             input_tokens: self.input_tokens - previous.input_tokens,
             cached_input_tokens: self.cached_input_tokens - previous.cached_input_tokens,
+            cache_creation_input_tokens: self.cache_creation_input_tokens
+                - previous.cache_creation_input_tokens,
             output_tokens: self.output_tokens - previous.output_tokens,
             reasoning_output_tokens: self.reasoning_output_tokens
                 - previous.reasoning_output_tokens,
@@ -70,6 +103,7 @@ impl TokenUsage {
     pub fn add_assign(&mut self, other: &Self) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
     }
@@ -77,6 +111,7 @@ impl TokenUsage {
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens
             + self.cached_input_tokens
+            + self.cache_creation_input_tokens
             + self.output_tokens
             + self.reasoning_output_tokens
     }
@@ -96,6 +131,10 @@ pub struct DailyUsage {
     pub date: String,
     pub model_breakdown: Vec<ModelUsage>,
     pub totals: TokenUsage,
+    #[serde(default)]
+    pub skipped_log_lines: u64,
+    #[serde(default)]
+    pub skipped_log_files: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,6 +148,7 @@ pub struct ModelUsage {
 pub struct PriceQuote {
     pub input_per_million_usd: f64,
     pub cached_input_per_million_usd: Option<f64>,
+    pub cache_creation_input_per_million_usd: Option<f64>,
     pub output_per_million_usd: f64,
 }
 
@@ -127,6 +167,7 @@ pub struct CostBreakdown {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub provider_id: String,
+    pub enabled_provider_ids: Vec<String>,
     pub date: String,
     pub title: String,
     pub tooltip: String,
@@ -139,6 +180,8 @@ pub struct AppSnapshot {
     pub last_refreshed_at: String,
     pub quota: Option<QuotaSnapshot>,
     pub dashboard_always_on_top: bool,
+    #[serde(default)]
+    pub warning: Option<SnapshotWarning>,
     pub error_message: Option<String>,
 }
 
@@ -166,6 +209,8 @@ mod tests {
         let settings = DashboardSettings::default();
 
         assert!(!settings.always_on_top);
+        assert_eq!(settings.current_provider, "codex");
+        assert_eq!(settings.enabled_providers, vec!["codex", "claude"]);
     }
 
     #[test]
@@ -236,6 +281,7 @@ mod tests {
                     usage: TokenUsage {
                         input_tokens: 100,
                         cached_input_tokens: 20,
+                        cache_creation_input_tokens: 0,
                         output_tokens: 5,
                         reasoning_output_tokens: 1,
                     },
@@ -247,6 +293,7 @@ mod tests {
                     usage: TokenUsage {
                         input_tokens: 50,
                         cached_input_tokens: 10,
+                        cache_creation_input_tokens: 0,
                         output_tokens: 4,
                         reasoning_output_tokens: 1,
                     },
@@ -271,6 +318,7 @@ mod tests {
         assert_eq!(snapshots.len(), 2);
         assert_eq!(snapshots[1].usage.input_tokens, 15);
         assert_eq!(snapshots[1].usage.cached_input_tokens, 3);
+        assert_eq!(snapshots[1].usage.cache_creation_input_tokens, 0);
         assert_eq!(snapshots[1].usage.output_tokens, 2);
     }
 
@@ -310,6 +358,7 @@ mod tests {
             TokenUsage {
                 input_tokens: 50,
                 cached_input_tokens: 10,
+                cache_creation_input_tokens: 0,
                 output_tokens: 4,
                 reasoning_output_tokens: 1,
             }

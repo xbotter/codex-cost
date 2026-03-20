@@ -83,9 +83,55 @@ h1 {
   gap: 14px;
 }
 
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--field-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--field) 82%, transparent);
+}
+
+.settings-tab {
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.settings-tab.is-active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.settings-panel-section {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-panel-section.is-hidden {
+  display: none;
+}
+
 .field-group {
   display: grid;
   gap: 8px;
+}
+
+.provider-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--field-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--field) 85%, transparent);
 }
 
 .field-label {
@@ -199,6 +245,7 @@ h1 {
 .text-input:focus,
 .toggle:focus,
 .segment input:focus + span,
+.settings-tab:focus,
 .save-button:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
   outline-offset: 1px;

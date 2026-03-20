@@ -5,13 +5,14 @@ import "@fontsource/nunito/latin-800.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toPng } from "html-to-image";
-import cameraIcon from "lucide-static/icons/camera.svg?raw";
 import pinIcon from "lucide-static/icons/pin.svg?raw";
 import pinOffIcon from "lucide-static/icons/pin-off.svg?raw";
+import shareIcon from "lucide-static/icons/share.svg?raw";
 
 type TokenUsage = {
   input_tokens: number;
   cached_input_tokens: number;
+  cache_creation_input_tokens: number;
   output_tokens: number;
   reasoning_output_tokens: number;
 };
@@ -38,8 +39,14 @@ type QuotaSnapshot = {
   is_error_state: boolean;
 };
 
+type SnapshotWarning = {
+  kind: string;
+  message: string;
+};
+
 type AppSnapshot = {
   provider_id: string;
+  enabled_provider_ids: string[];
   date: string;
   title: string;
   tooltip: string;
@@ -52,6 +59,7 @@ type AppSnapshot = {
   last_refreshed_at: string;
   quota: QuotaSnapshot | null;
   dashboard_always_on_top: boolean;
+  warning: SnapshotWarning | null;
   error_message: string | null;
 };
 
@@ -60,13 +68,25 @@ let summaryTrendEl: HTMLElement | null;
 let totalsEl: HTMLElement | null;
 let quotaRowEl: HTMLElement | null;
 let modelsEl: HTMLElement | null;
+let providerSwitcherEl: HTMLElement | null;
 let pinButtonEl: HTMLButtonElement | null;
 let shareButtonEl: HTMLButtonElement | null;
 let toastEl: HTMLElement | null;
 let toastTimer: number | undefined;
+let currentProviderId = "codex";
+let providerSwitchInFlight = false;
+
+const PROVIDERS = [
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+] as const;
 
 function usd(value: number) {
   return `$${value.toFixed(2)}`;
+}
+
+function providerLabel(providerId: string) {
+  return PROVIDERS.find((provider) => provider.id === providerId)?.label ?? "Codex";
 }
 
 function formatTokens(value: number) {
@@ -168,7 +188,7 @@ function sparklineMarkup(points: number[], currentBucket: number) {
 }
 
 function billableInputTokens(usage: TokenUsage) {
-  return Math.max(0, usage.input_tokens - usage.cached_input_tokens);
+  return Math.max(0, usage.input_tokens - usage.cached_input_tokens + usage.cache_creation_input_tokens);
 }
 
 function totalOutputTokens(usage: TokenUsage) {
@@ -184,7 +204,15 @@ function pinIconMarkup(pinned: boolean) {
 }
 
 function screenshotIconMarkup() {
-  return normalizeLucide(cameraIcon);
+  return normalizeLucide(shareIcon);
+}
+
+function emptyStateMarkup(snapshot: AppSnapshot) {
+  if (snapshot.provider_id === "claude" && snapshot.warning) {
+    return `<div class="empty is-warning">${snapshot.warning.message}</div>`;
+  }
+
+  return `<div class="empty">No ${providerLabel(snapshot.provider_id)} usage found for today.</div>`;
 }
 
 function showToast(message: string, kind: "success" | "error" = "success") {
@@ -249,7 +277,29 @@ async function copyDashboardSnapshot() {
 }
 
 function render(snapshot: AppSnapshot) {
+  currentProviderId = snapshot.provider_id;
   const currentBucket = currentHalfHourBucket(snapshot.last_refreshed_at);
+
+  if (providerSwitcherEl) {
+    const enabledProviders = PROVIDERS.filter((provider) =>
+      snapshot.enabled_provider_ids.includes(provider.id),
+    );
+    providerSwitcherEl.hidden = enabledProviders.length <= 1;
+    providerSwitcherEl.innerHTML = enabledProviders.map(
+      (provider) => `
+        <button
+          class="provider-chip${provider.id === snapshot.provider_id ? " is-active" : ""}"
+          type="button"
+          role="tab"
+          aria-selected="${provider.id === snapshot.provider_id}"
+          data-provider-id="${provider.id}"
+          ${providerSwitchInFlight ? "disabled" : ""}
+        >
+          ${provider.label}
+        </button>
+      `,
+    ).join("");
+  }
 
   if (summaryEl) {
     summaryEl.textContent = usd(snapshot.total_cost_usd);
@@ -317,7 +367,7 @@ function render(snapshot: AppSnapshot) {
 
   if (modelsEl) {
     if (!snapshot.model_costs.length) {
-      modelsEl.innerHTML = `<div class="empty">No usage found for today.</div>`;
+      modelsEl.innerHTML = emptyStateMarkup(snapshot);
       return;
     }
 
@@ -357,6 +407,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   totalsEl = document.querySelector("#totals");
   quotaRowEl = document.querySelector("#quota-row");
   modelsEl = document.querySelector("#models");
+  providerSwitcherEl = document.querySelector("#provider-switcher");
   pinButtonEl = document.querySelector("#pin-button");
   shareButtonEl = document.querySelector("#share-button");
   toastEl = document.querySelector("#toast");
@@ -380,6 +431,28 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   shareButtonEl?.addEventListener("click", () => {
     void copyDashboardSnapshot();
+  });
+
+  providerSwitcherEl?.addEventListener("click", async (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-provider-id]");
+    const providerId = button?.dataset.providerId;
+    if (!providerId || providerId === currentProviderId || providerSwitchInFlight) {
+      return;
+    }
+
+    providerSwitchInFlight = true;
+    render(await invoke<AppSnapshot>("get_snapshot"));
+
+    try {
+      const snapshot = await invoke<AppSnapshot>("set_current_provider", { providerId });
+      render(snapshot);
+    } catch (error) {
+      console.error(error);
+      showToast("Switch failed", "error");
+    } finally {
+      providerSwitchInFlight = false;
+      render(await invoke<AppSnapshot>("get_snapshot"));
+    }
   });
 
   const snapshot = await invoke<AppSnapshot>("get_snapshot");

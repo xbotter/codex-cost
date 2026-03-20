@@ -40,6 +40,7 @@ pub struct PricingSnapshot {
 pub struct LiteLlmPrice {
     pub input_cost_per_token: Option<f64>,
     pub cache_read_input_token_cost: Option<f64>,
+    pub cache_creation_input_token_cost: Option<f64>,
     pub output_cost_per_token: Option<f64>,
 }
 
@@ -257,7 +258,7 @@ pub fn normalize_model_for_pricing(model: &str) -> String {
 
 pub fn find_price_quote(cache: &PricingCache, model: &str) -> Option<PriceQuote> {
     let normalized = normalize_model_for_pricing(model);
-    let price = cache.prices.get(&normalized)?;
+    let price = find_matching_price_entry(cache, &normalized)?;
 
     let input_per_million_usd = price.input_cost_per_token? * 1_000_000.0;
     let output_per_million_usd = price.output_cost_per_token? * 1_000_000.0;
@@ -265,12 +266,94 @@ pub fn find_price_quote(cache: &PricingCache, model: &str) -> Option<PriceQuote>
         .cache_read_input_token_cost
         .or(price.input_cost_per_token)
         .map(|value| value * 1_000_000.0);
+    let cache_creation_input_per_million_usd = price
+        .cache_creation_input_token_cost
+        .map(|value| value * 1_000_000.0);
 
     Some(PriceQuote {
         input_per_million_usd,
         cached_input_per_million_usd,
+        cache_creation_input_per_million_usd,
         output_per_million_usd,
     })
+}
+
+fn find_matching_price_entry<'a>(
+    cache: &'a PricingCache,
+    normalized_model: &str,
+) -> Option<&'a LiteLlmPrice> {
+    if let Some(price) = cache.prices.get(normalized_model) {
+        return Some(price);
+    }
+
+    let suffix_slash = format!("/{}", normalized_model);
+    let suffix_dot = format!(".{}", normalized_model);
+    let mut matches = cache
+        .prices
+        .iter()
+        .filter(|(key, _)| {
+            let lower = key.to_ascii_lowercase();
+            lower.ends_with(&suffix_slash) || lower.ends_with(&suffix_dot)
+        })
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    matches.sort_by_key(|(key, _)| pricing_match_rank(key, normalized_model));
+    Some(matches[0].1)
+}
+
+fn pricing_match_rank(key: &str, normalized_model: &str) -> (usize, usize, usize) {
+    let lower = key.to_ascii_lowercase();
+    let family_prefixes = preferred_provider_prefixes(normalized_model);
+    let provider_rank = family_prefixes
+        .iter()
+        .position(|prefix| lower.starts_with(prefix))
+        .unwrap_or(family_prefixes.len());
+    let separator_rank = if lower.ends_with(&format!("/{}", normalized_model)) {
+        0
+    } else if lower.ends_with(&format!(".{}", normalized_model)) {
+        1
+    } else {
+        2
+    };
+
+    (provider_rank, separator_rank, key.len())
+}
+
+fn preferred_provider_prefixes(normalized_model: &str) -> &'static [&'static str] {
+    if normalized_model.starts_with("gpt-")
+        || normalized_model.starts_with("o1")
+        || normalized_model.starts_with("o3")
+        || normalized_model.starts_with("o4")
+    {
+        return &["openai/", "chatgpt/"];
+    }
+
+    if normalized_model.starts_with("glm-") {
+        return &[
+            "zai/",
+            "zai.",
+            "zhipu/",
+            "zhipuai/",
+            "openrouter/z-ai/",
+            "novita/zai-org/",
+            "vertex_ai/zai-org/",
+            "cerebras/zai-",
+        ];
+    }
+
+    if normalized_model.starts_with("minimax-") {
+        return &["minimax/"];
+    }
+
+    if normalized_model.starts_with("kimi-") || normalized_model.starts_with("moonshot-") {
+        return &["moonshot/", "kimi/"];
+    }
+
+    &[]
 }
 
 #[cfg(test)]
@@ -280,7 +363,12 @@ mod tests {
 
     use anyhow::{anyhow, Result};
 
-    use super::{PricingStore, BUNDLED_PRICING_SOURCE_URL, LITELLM_PRICING_URL};
+    use std::collections::HashMap;
+
+    use super::{
+        find_price_quote, normalize_model_for_pricing, LiteLlmPrice, PricingCache, PricingStore,
+        BUNDLED_PRICING_SOURCE_URL, LITELLM_PRICING_URL,
+    };
 
     #[test]
     fn load_uses_bundled_pricing_when_fetch_fails_and_no_cache_exists() -> Result<()> {
@@ -333,5 +421,73 @@ mod tests {
 
         fs::remove_dir_all(&root)?;
         Ok(())
+    }
+
+    #[test]
+    fn normalize_model_for_pricing_maps_claude_code_provider_models() {
+        assert_eq!(normalize_model_for_pricing("glm-5"), "glm-5");
+        assert_eq!(normalize_model_for_pricing("glm-4.7"), "glm-4.7");
+        assert_eq!(normalize_model_for_pricing("glm-4.5-air"), "glm-4.5-air");
+        assert_eq!(normalize_model_for_pricing("MiniMax-M2.5"), "minimax-m2.5");
+    }
+
+    #[test]
+    fn find_price_quote_prefers_known_provider_prefixes_for_family_matches() {
+        let cache = PricingCache {
+            fetched_at: "2026-03-20T00:00:00Z".to_string(),
+            source_url: "test".to_string(),
+            prices: HashMap::from([
+                (
+                    "openrouter/z-ai/glm-5".to_string(),
+                    LiteLlmPrice {
+                        input_cost_per_token: Some(8e-7),
+                        cache_read_input_token_cost: None,
+                        cache_creation_input_token_cost: None,
+                        output_cost_per_token: Some(2.56e-6),
+                    },
+                ),
+                (
+                    "zai/glm-5".to_string(),
+                    LiteLlmPrice {
+                        input_cost_per_token: Some(1e-6),
+                        cache_read_input_token_cost: Some(2e-7),
+                        cache_creation_input_token_cost: Some(0.0),
+                        output_cost_per_token: Some(3.2e-6),
+                    },
+                ),
+            ]),
+        };
+
+        let quote = find_price_quote(&cache, "glm-5").expect("glm-5 should resolve");
+        assert_eq!(quote.input_per_million_usd, 1.0);
+        assert!(
+            (quote
+                .cached_input_per_million_usd
+                .expect("cached input should exist")
+                - 0.2)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn find_price_quote_matches_suffix_for_mixed_case_provider_models() {
+        let cache = PricingCache {
+            fetched_at: "2026-03-20T00:00:00Z".to_string(),
+            source_url: "test".to_string(),
+            prices: HashMap::from([(
+                "minimax/MiniMax-M2.5".to_string(),
+                LiteLlmPrice {
+                    input_cost_per_token: Some(3e-7),
+                    cache_read_input_token_cost: Some(3e-8),
+                    cache_creation_input_token_cost: Some(3.75e-7),
+                    output_cost_per_token: Some(1.2e-6),
+                },
+            )]),
+        };
+
+        let quote = find_price_quote(&cache, "MiniMax-M2.5").expect("minimax should resolve");
+        assert_eq!(quote.input_per_million_usd, 0.3);
+        assert_eq!(quote.cached_input_per_million_usd, Some(0.03));
     }
 }

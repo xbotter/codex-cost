@@ -46,17 +46,18 @@ impl SettingsStore {
 
     pub fn load_dashboard_settings(&self) -> Result<DashboardSettings> {
         let config = self.load_config()?;
-        Ok(config.dashboard)
+        Ok(normalize_dashboard_settings(&config.dashboard))
     }
 
     pub fn save_dashboard_settings(
         &self,
         settings: &DashboardSettings,
     ) -> Result<DashboardSettings> {
+        let normalized = validate_dashboard_settings(settings)?;
         let mut config = self.load_config()?;
-        config.dashboard = settings.clone();
+        config.dashboard = normalized.clone();
         self.persist_config(&config)?;
-        Ok(settings.clone())
+        Ok(normalized)
     }
 
     fn load_config(&self) -> Result<AppConfig> {
@@ -112,6 +113,53 @@ pub fn normalize_quota_settings(settings: &QuotaSettings) -> Result<QuotaSetting
         mode: settings.mode.clone(),
         amount_usd: rounded,
     })
+}
+
+fn normalize_dashboard_settings(settings: &DashboardSettings) -> DashboardSettings {
+    let supported_provider_order = ["codex", "claude"];
+    let mut enabled_providers = settings
+        .enabled_providers
+        .iter()
+        .filter_map(|provider| {
+            supported_provider_order
+                .contains(&provider.as_str())
+                .then_some(provider.clone())
+        })
+        .collect::<Vec<_>>();
+    enabled_providers.sort_by_key(|provider| {
+        supported_provider_order
+            .iter()
+            .position(|supported| supported == &provider.as_str())
+            .unwrap_or(supported_provider_order.len())
+    });
+    enabled_providers.dedup();
+
+    if enabled_providers.is_empty() {
+        enabled_providers = DashboardSettings::default().enabled_providers;
+    }
+
+    let current_provider = if enabled_providers.contains(&settings.current_provider) {
+        settings.current_provider.clone()
+    } else {
+        enabled_providers[0].clone()
+    };
+
+    DashboardSettings {
+        always_on_top: settings.always_on_top,
+        current_provider,
+        enabled_providers,
+    }
+}
+
+fn validate_dashboard_settings(settings: &DashboardSettings) -> Result<DashboardSettings> {
+    let normalized = normalize_dashboard_settings(settings);
+    if normalized.enabled_providers.is_empty() {
+        anyhow::bail!("at least one provider must remain enabled");
+    }
+    if settings.enabled_providers.is_empty() {
+        anyhow::bail!("at least one provider must remain enabled");
+    }
+    Ok(normalized)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -182,6 +230,8 @@ mod tests {
             .expect("missing config should default");
 
         assert_eq!(settings, DashboardSettings::default());
+        assert_eq!(settings.current_provider, "codex");
+        assert_eq!(settings.enabled_providers, vec!["codex", "claude"]);
         fs::remove_dir_all(root).expect("temp root should clean up");
     }
 
@@ -267,6 +317,8 @@ mod tests {
         let store = SettingsStore::new(path.clone());
         let settings = DashboardSettings {
             always_on_top: true,
+            current_provider: "claude".to_string(),
+            enabled_providers: vec!["codex".to_string(), "claude".to_string()],
         };
 
         let saved = store
@@ -282,6 +334,47 @@ mod tests {
 
         let raw = fs::read_to_string(path).expect("config should exist");
         assert!(raw.contains("\"always_on_top\": true"));
+        assert!(raw.contains("\"current_provider\": \"claude\""));
+        assert!(raw.contains("\"enabled_providers\": ["));
+        fs::remove_dir_all(root).expect("temp root should clean up");
+    }
+
+    #[test]
+    fn load_dashboard_settings_restores_at_least_one_enabled_provider() {
+        let root = test_root("invalid-dashboard-providers");
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"dashboard":{"always_on_top":false,"current_provider":"claude","enabled_providers":[]}}"#,
+        )
+        .expect("invalid config should write");
+
+        let store = SettingsStore::new(path);
+        let settings = store
+            .load_dashboard_settings()
+            .expect("invalid dashboard config should normalize");
+
+        assert_eq!(settings.current_provider, "claude");
+        assert_eq!(settings.enabled_providers, vec!["codex", "claude"]);
+        fs::remove_dir_all(root).expect("temp root should clean up");
+    }
+
+    #[test]
+    fn save_dashboard_settings_rejects_empty_enabled_provider_list() {
+        let root = test_root("reject-empty-dashboard-providers");
+        let store = SettingsStore::new(root.join("settings.json"));
+
+        let error = store
+            .save_dashboard_settings(&DashboardSettings {
+                always_on_top: false,
+                current_provider: "codex".to_string(),
+                enabled_providers: Vec::new(),
+            })
+            .expect_err("empty enabled providers should fail");
+
+        assert!(error
+            .to_string()
+            .contains("at least one provider must remain enabled"));
         fs::remove_dir_all(root).expect("temp root should clean up");
     }
 }

@@ -139,6 +139,52 @@ body {
   min-width: 0;
 }
 
+.hero-toolbar {
+  margin-bottom: 12px;
+}
+
+.provider-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.provider-chip {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(244, 239, 229, 0.62);
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.provider-chip:hover:not(:disabled) {
+  color: rgba(244, 239, 229, 0.92);
+}
+
+.provider-chip.is-active {
+  background: rgba(243, 169, 75, 0.18);
+  color: #f3a94b;
+}
+
+.provider-chip:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .eyebrow {
   margin: 0;
   font-size: 0.74rem;
@@ -380,6 +426,10 @@ body {
   padding: 10px 0;
 }
 
+.empty.is-warning {
+  color: #ffcfbf;
+}
+
 @media (max-width: 680px) {
   .hero-head {
     flex-direction: column;
@@ -424,5 +474,15 @@ body {
 
   .metrics strong {
     font-size: 1.6rem;
+  }
+
+  .provider-switcher {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .provider-chip {
+    flex: 1 1 0;
+    text-align: center;
   }
 }
