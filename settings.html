@@ -10,80 +10,22 @@
 
   <body>
     <main class="settings-shell">
-      <section class="settings-panel">
-        <div class="settings-header">
-          <h1>Settings</h1>
-          <p class="settings-copy">Adjust dashboard quota and choose which local providers stay active.</p>
-        </div>
-
-        <form id="quota-form" class="settings-form">
-          <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-            <button id="tab-quota" class="settings-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-quota" data-tab="quota">
-              Quota
-            </button>
-            <button id="tab-providers" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-providers" data-tab="providers">
-              Providers
-            </button>
+      <form id="settings-form" class="settings-layout">
+        <aside class="provider-sidebar">
+          <div class="pane-header">
+            <h1>Providers</h1>
           </div>
+          <div id="provider-list" class="provider-list"></div>
+        </aside>
 
-          <section id="panel-quota" class="settings-panel-section" role="tabpanel" aria-labelledby="tab-quota">
-            <label class="toggle-row">
-              <span class="toggle-copy">
-                <strong>Enable quota</strong>
-                <span>Show a daily quota row on the dashboard.</span>
-              </span>
-              <input id="quota-enabled" class="toggle" type="checkbox" />
-            </label>
-
-            <div class="field-group">
-              <span class="field-label">Mode</span>
-              <div class="segmented-control">
-                <label class="segment">
-                  <input type="radio" name="quota-mode" value="target" />
-                  <span>Target</span>
-                </label>
-                <label class="segment">
-                  <input type="radio" name="quota-mode" value="cap" />
-                  <span>Cap</span>
-                </label>
-              </div>
-            </div>
-
-            <label class="field-group">
-              <span class="field-label">Daily USD amount</span>
-              <input id="quota-amount" class="text-input" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="250.00" />
-            </label>
-          </section>
-
-          <section id="panel-providers" class="settings-panel-section is-hidden" role="tabpanel" aria-labelledby="tab-providers" hidden>
-            <div class="field-group">
-              <span class="field-label">Providers</span>
-              <div class="provider-list">
-                <label class="toggle-row">
-                  <span class="toggle-copy">
-                    <strong>Codex</strong>
-                    <span>Read local Codex session logs.</span>
-                  </span>
-                  <input id="provider-codex" class="toggle" type="checkbox" />
-                </label>
-                <label class="toggle-row">
-                  <span class="toggle-copy">
-                    <strong>Claude Code</strong>
-                    <span>Read local Claude Code project logs.</span>
-                  </span>
-                  <input id="provider-claude" class="toggle" type="checkbox" />
-                </label>
-              </div>
-            </div>
-          </section>
-
+        <section class="detail-pane">
+          <div id="provider-detail" class="provider-detail"></div>
           <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
-
           <div class="actions">
-            <button id="save-button" class="save-button" type="submit">Save</button>
+            <button id="save-button" class="save-button" type="submit">Done</button>
           </div>
-        </form>
-      </section>
+        </section>
+      </form>
     </main>
   </body>
 </html>

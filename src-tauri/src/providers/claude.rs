@@ -8,7 +8,7 @@ use chrono::{DateTime, Local, NaiveDate, Timelike};
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::domain::{DailyUsage, ModelUsage, TokenUsage, UsageSnapshot};
+use crate::domain::{DailyUsage, ModelUsage, ProviderSettingsSummary, TokenUsage, UsageSnapshot};
 use crate::providers::UsageProvider;
 
 const DEFAULT_FALLBACK_MODEL: &str = "claude";
@@ -48,6 +48,21 @@ impl ClaudeUsageProvider {
 impl UsageProvider for ClaudeUsageProvider {
     fn id(&self) -> &'static str {
         "claude"
+    }
+
+    fn settings_summary(&self) -> ProviderSettingsSummary {
+        let has_local_data = self.root.exists() && self.session_files().next().is_some();
+        ProviderSettingsSummary {
+            id: self.id().to_string(),
+            display_name: "Claude Code".to_string(),
+            description: "Read local Claude Code project logs.".to_string(),
+            status_label: if has_local_data {
+                "Detected local sessions".to_string()
+            } else {
+                "No local data found".to_string()
+            },
+            has_local_data,
+        }
     }
 
     fn collect_daily_usage(&self, date: NaiveDate) -> Result<DailyUsage> {

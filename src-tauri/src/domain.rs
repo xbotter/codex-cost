@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +15,8 @@ pub struct QuotaSettings {
     pub mode: QuotaMode,
     pub amount_usd: f64,
 }
+
+pub type ProviderQuotaSettings = BTreeMap<String, QuotaSettings>;
 
 impl Default for QuotaSettings {
     fn default() -> Self {
@@ -65,6 +69,15 @@ pub struct QuotaSnapshot {
 pub struct SnapshotWarning {
     pub kind: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSettingsSummary {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    pub status_label: String,
+    pub has_local_data: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

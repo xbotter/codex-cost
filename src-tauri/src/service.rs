@@ -5,11 +5,13 @@ use anyhow::{Context, Result};
 use chrono::Local;
 
 use crate::domain::{
-    AppSnapshot, CostBreakdown, DailyUsage, DashboardSettings, PriceQuote, QuotaMode,
-    QuotaSettings, QuotaSnapshot, SnapshotWarning, TokenUsage,
+    AppSnapshot, CostBreakdown, DailyUsage, DashboardSettings, PriceQuote, ProviderQuotaSettings,
+    ProviderSettingsSummary, QuotaMode, QuotaSettings, QuotaSnapshot, SnapshotWarning, TokenUsage,
 };
 use crate::pricing::{find_price_quote, normalize_model_for_pricing, PricingCache, PricingStore};
-use crate::providers::{claude::ClaudeUsageProvider, codex::CodexUsageProvider, UsageProvider};
+use crate::providers::{
+    claude::ClaudeUsageProvider, codex::CodexUsageProvider, kimi::KimiUsageProvider, UsageProvider,
+};
 use crate::settings::SettingsStore;
 
 #[derive(Clone)]
@@ -45,6 +47,7 @@ pub fn total_output_tokens(usage: &TokenUsage) -> u64 {
 pub fn provider_display_name(provider_id: &str) -> &'static str {
     match provider_id {
         "claude" => "Claude Code",
+        "kimi" => "Kimi Code",
         _ => "Codex",
     }
 }
@@ -52,6 +55,8 @@ pub fn provider_display_name(provider_id: &str) -> &'static str {
 impl UsageAppService {
     pub fn new() -> Result<Self> {
         let codex_root = CodexUsageProvider::default_root()?;
+        let kimi_root = KimiUsageProvider::default_root()?;
+        let kimi_config = KimiUsageProvider::default_config_path()?;
         let pricing_cache = PricingStore::default_cache_path()?;
         let settings_path = SettingsStore::default_config_path()?;
 
@@ -61,6 +66,7 @@ impl UsageAppService {
                 Arc::new(ClaudeUsageProvider::new(
                     ClaudeUsageProvider::default_root()?
                 )),
+                Arc::new(KimiUsageProvider::new(kimi_root, kimi_config)),
             ],
             pricing_store: PricingStore::new(pricing_cache, Duration::from_secs(60 * 60 * 24)),
             settings_store: SettingsStore::new(settings_path),
@@ -69,7 +75,6 @@ impl UsageAppService {
 
     pub fn refresh(&self, force_pricing_refresh: bool) -> Result<AppSnapshot> {
         let today = Local::now().date_naive();
-        let quota_settings = self.settings_store.load_quota_settings()?;
         let dashboard_settings = self.settings_store.load_dashboard_settings()?;
         let current_provider_id = dashboard_settings.current_provider.as_str();
         let provider = self
@@ -91,6 +96,7 @@ impl UsageAppService {
                 })
             })
             .context("no usage providers configured")?;
+        let quota_settings = self.load_quota_settings(provider.id())?;
         let usage = match provider.collect_daily_usage(today) {
             Ok(usage) => usage,
             Err(error) => {
@@ -116,12 +122,26 @@ impl UsageAppService {
         ))
     }
 
-    pub fn load_quota_settings(&self) -> Result<QuotaSettings> {
-        self.settings_store.load_quota_settings()
+    pub fn load_quota_settings(&self, provider_id: &str) -> Result<QuotaSettings> {
+        self.settings_store.load_quota_settings(provider_id)
     }
 
-    pub fn save_quota_settings(&self, settings: &QuotaSettings) -> Result<QuotaSettings> {
-        self.settings_store.save_quota_settings(settings)
+    pub fn load_provider_quota_settings(&self) -> Result<ProviderQuotaSettings> {
+        self.settings_store.load_provider_quota_settings()
+    }
+
+    pub fn load_provider_settings_summaries(&self) -> Vec<ProviderSettingsSummary> {
+        self.providers
+            .iter()
+            .map(|provider| provider.settings_summary())
+            .collect()
+    }
+
+    pub fn save_provider_quota_settings(
+        &self,
+        settings: &ProviderQuotaSettings,
+    ) -> Result<ProviderQuotaSettings> {
+        self.settings_store.save_provider_quota_settings(settings)
     }
 
     pub fn load_dashboard_settings(&self) -> Result<DashboardSettings> {

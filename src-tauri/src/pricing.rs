@@ -247,11 +247,13 @@ pub fn normalize_model_for_pricing(model: &str) -> String {
     let normalized = model
         .trim()
         .trim_start_matches("openai/")
+        .trim_start_matches("kimi-code/")
         .to_ascii_lowercase();
     match normalized.as_str() {
         "gpt-5-codex" => "gpt-5".to_string(),
         "gpt-5-mini-codex" => "gpt-5-mini".to_string(),
         "gpt-5-nano-codex" => "gpt-5-nano".to_string(),
+        "kimi-for-coding" | "kimi-code" => "kimi-k2.5".to_string(),
         other => other.to_string(),
     }
 }
@@ -429,6 +431,11 @@ mod tests {
         assert_eq!(normalize_model_for_pricing("glm-4.7"), "glm-4.7");
         assert_eq!(normalize_model_for_pricing("glm-4.5-air"), "glm-4.5-air");
         assert_eq!(normalize_model_for_pricing("MiniMax-M2.5"), "minimax-m2.5");
+        assert_eq!(
+            normalize_model_for_pricing("kimi-code/kimi-for-coding"),
+            "kimi-k2.5"
+        );
+        assert_eq!(normalize_model_for_pricing("kimi-for-coding"), "kimi-k2.5");
     }
 
     #[test]

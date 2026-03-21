@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+type ProviderId = "codex" | "claude" | "kimi";
 type QuotaMode = "target" | "cap";
+type LimitMode = "none" | QuotaMode;
 
 type QuotaSettings = {
   enabled: boolean;
@@ -10,23 +12,71 @@ type QuotaSettings = {
   amount_usd: number;
 };
 
+type ProviderQuotaSettings = Record<ProviderId, QuotaSettings>;
+
 type DashboardSettings = {
   always_on_top: boolean;
   current_provider: string;
   enabled_providers: string[];
 };
 
-let enabledEl: HTMLInputElement | null;
-let amountEl: HTMLInputElement | null;
+type ProviderSettingsSummary = {
+  id: ProviderId;
+  display_name: string;
+  description: string;
+  status_label: string;
+  has_local_data: boolean;
+};
+
+const PROVIDER_IDS: ProviderId[] = ["codex", "claude", "kimi"];
+
 let formEl: HTMLFormElement | null;
+let providerListEl: HTMLElement | null;
+let providerDetailEl: HTMLElement | null;
 let statusEl: HTMLElement | null;
 let saveButtonEl: HTMLButtonElement | null;
-let providerCodexEl: HTMLInputElement | null;
-let providerClaudeEl: HTMLInputElement | null;
-let tabButtons: HTMLButtonElement[] = [];
-let tabPanels: HTMLElement[] = [];
+
 let currentDashboardSettings: DashboardSettings | null = null;
-let currentTab: "quota" | "providers" = "quota";
+let currentQuotaSettings: ProviderQuotaSettings | null = null;
+let providerSummaries: ProviderSettingsSummary[] = [];
+let selectedProviderId: ProviderId = "codex";
+
+function defaultQuotaSettings(): QuotaSettings {
+  return {
+    enabled: false,
+    mode: "target",
+    amount_usd: 0,
+  };
+}
+
+function normalizeProviderQuotaSettings(settings: Partial<Record<ProviderId, QuotaSettings>>): ProviderQuotaSettings {
+  return {
+    codex: settings.codex ?? defaultQuotaSettings(),
+    claude: settings.claude ?? defaultQuotaSettings(),
+    kimi: settings.kimi ?? defaultQuotaSettings(),
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function providerSummary(providerId: ProviderId): ProviderSettingsSummary | undefined {
+  return providerSummaries.find((summary) => summary.id === providerId);
+}
+
+function compactStatusLabel(summary?: ProviderSettingsSummary): string {
+  return summary?.has_local_data ? "Detected" : "Missing";
+}
+
+function isProviderEnabled(providerId: ProviderId): boolean {
+  return currentDashboardSettings?.enabled_providers.includes(providerId) ?? false;
+}
 
 function setStatus(message: string, isError = false) {
   if (!statusEl) {
@@ -37,95 +87,252 @@ function setStatus(message: string, isError = false) {
   statusEl.classList.toggle("is-error", isError);
 }
 
-function selectedMode(): QuotaMode {
-  const selected = document.querySelector<HTMLInputElement>('input[name="quota-mode"]:checked');
-  return selected?.value === "cap" ? "cap" : "target";
+function limitModeForQuota(settings: QuotaSettings): LimitMode {
+  return settings.enabled ? settings.mode : "none";
 }
 
-function applySettings(settings: QuotaSettings) {
-  if (!enabledEl || !amountEl) {
+function validateQuotaSettings(
+  settings: ProviderQuotaSettings,
+  enabledProviders: ProviderId[],
+): string | null {
+  for (const providerId of enabledProviders) {
+    const quota = settings[providerId];
+    if (quota.enabled && (!Number.isFinite(quota.amount_usd) || quota.amount_usd <= 0)) {
+      const label = providerSummary(providerId)?.display_name ?? providerId;
+      return `Enter a valid positive USD amount for ${label}.`;
+    }
+  }
+  return null;
+}
+
+function renderProviderList() {
+  if (!providerListEl) {
     return;
   }
 
-  enabledEl.checked = settings.enabled;
-  amountEl.value = settings.amount_usd > 0 ? settings.amount_usd.toFixed(2) : "";
+  providerListEl.innerHTML = providerSummaries
+    .map((summary) => {
+      const isActive = summary.id === selectedProviderId;
+      const isEnabled = isProviderEnabled(summary.id);
+      const statusClass = summary.has_local_data ? "provider-status is-detected" : "provider-status";
+      return `
+        <button
+          class="provider-item${isActive ? " is-active" : ""}"
+          type="button"
+          data-provider-select="${summary.id}"
+        >
+          <span class="provider-item-copy">
+            <strong>${escapeHtml(summary.display_name)}</strong>
+          </span>
+          <span class="provider-item-meta">
+            <span class="${statusClass}">${compactStatusLabel(summary)}</span>
+            <span class="provider-enabled-indicator${isEnabled ? " is-enabled" : ""}"></span>
+          </span>
+        </button>
+      `;
+    })
+    .join("");
 
-  const targetRadio = document.querySelector<HTMLInputElement>('input[name="quota-mode"][value="target"]');
-  const capRadio = document.querySelector<HTMLInputElement>('input[name="quota-mode"][value="cap"]');
-  if (targetRadio && capRadio) {
-    targetRadio.checked = settings.mode === "target";
-    capRadio.checked = settings.mode === "cap";
-  }
+  providerListEl.querySelectorAll<HTMLButtonElement>("[data-provider-select]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const providerId = button.dataset.providerSelect as ProviderId;
+      selectedProviderId = providerId;
+      renderProviderList();
+      renderProviderDetail();
+      setStatus("");
+    });
+  });
 }
 
-function applyDashboardSettings(settings: DashboardSettings) {
-  currentDashboardSettings = settings;
-  if (providerCodexEl) {
-    providerCodexEl.checked = settings.enabled_providers.includes("codex");
+function renderProviderDetail() {
+  if (!providerDetailEl || !currentDashboardSettings || !currentQuotaSettings) {
+    return;
   }
-  if (providerClaudeEl) {
-    providerClaudeEl.checked = settings.enabled_providers.includes("claude");
-  }
-}
 
-function setActiveTab(nextTab: "quota" | "providers") {
-  currentTab = nextTab;
+  const summary = providerSummary(selectedProviderId);
+  const quota = currentQuotaSettings[selectedProviderId];
+  const isEnabled = isProviderEnabled(selectedProviderId);
+  const limitMode = limitModeForQuota(quota);
+  const amountValue = quota.amount_usd > 0 ? quota.amount_usd.toFixed(2) : "";
+  const statusChipClass = summary?.has_local_data ? "provider-status is-detected" : "provider-status";
+  const statusLabel = compactStatusLabel(summary);
 
-  tabButtons.forEach((button) => {
-    const isActive = button.dataset.tab === nextTab;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  providerDetailEl.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">
+        <h2>${escapeHtml(summary?.display_name ?? selectedProviderId)}</h2>
+        <div class="detail-meta">
+          <span class="${statusChipClass}">${escapeHtml(statusLabel)}</span>
+          <span class="detail-meta-text">${isEnabled ? "Enabled" : "Disabled"}</span>
+        </div>
+      </div>
+      <label class="detail-toggle">
+        <span>Enabled</span>
+        <input id="provider-enabled" class="toggle" type="checkbox" ${isEnabled ? "checked" : ""} />
+      </label>
+    </div>
+
+    <section class="detail-section">
+      <h3>Overview</h3>
+      <div class="kv-list">
+        <div class="kv-row">
+          <span class="kv-label">Data</span>
+          <span class="kv-value">${escapeHtml(statusLabel)}</span>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">Dashboard</span>
+          <span class="kv-value">${isEnabled ? "Yes" : "No"}</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="detail-section">
+      <h3>Daily limit</h3>
+      <div class="limit-mode-group" role="radiogroup" aria-label="${escapeHtml(summary?.display_name ?? selectedProviderId)} daily limit mode">
+        ${(["none", "target", "cap"] as const)
+          .map((mode) => {
+            const labels: Record<LimitMode, string> = {
+              none: "No limit",
+              target: "Target",
+              cap: "Cap",
+            };
+            return `
+              <label class="mode-chip">
+                <input
+                  type="radio"
+                  name="quota-mode"
+                  value="${mode}"
+                  ${limitMode === mode ? "checked" : ""}
+                />
+                <span>${labels[mode]}</span>
+              </label>
+            `;
+          })
+          .join("")}
+      </div>
+      <label class="amount-field">
+        <span>USD / day</span>
+        <input
+          id="quota-amount"
+          class="text-input"
+          type="number"
+          inputmode="decimal"
+          min="0.01"
+          step="0.01"
+          placeholder="200.00"
+          value="${amountValue}"
+          ${limitMode === "none" ? "disabled" : ""}
+        />
+      </label>
+    </section>
+  `;
+
+  const enabledInput = providerDetailEl.querySelector<HTMLInputElement>("#provider-enabled");
+  enabledInput?.addEventListener("change", () => {
+    if (!currentDashboardSettings || !enabledInput) {
+      return;
+    }
+
+    const enabledProviders = currentDashboardSettings.enabled_providers.filter(
+      (provider): provider is ProviderId => PROVIDER_IDS.includes(provider as ProviderId),
+    );
+
+    if (!enabledInput.checked && enabledProviders.length === 1 && enabledProviders[0] === selectedProviderId) {
+      enabledInput.checked = true;
+      setStatus("Keep at least one provider enabled.", true);
+      return;
+    }
+
+    currentDashboardSettings.enabled_providers = enabledInput.checked
+      ? Array.from(new Set([...enabledProviders, selectedProviderId]))
+      : enabledProviders.filter((provider) => provider !== selectedProviderId);
+
+    if (!currentDashboardSettings.enabled_providers.includes(currentDashboardSettings.current_provider)) {
+      currentDashboardSettings.current_provider = currentDashboardSettings.enabled_providers[0] ?? "codex";
+    }
+
+    renderProviderList();
+    renderProviderDetail();
+    setStatus("");
   });
 
-  tabPanels.forEach((panel) => {
-    const isActive = panel.id === `panel-${nextTab}`;
-    panel.classList.toggle("is-hidden", !isActive);
-    panel.hidden = !isActive;
+  providerDetailEl.querySelectorAll<HTMLInputElement>('input[name="quota-mode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (!currentQuotaSettings) {
+        return;
+      }
+      const nextMode = input.value as LimitMode;
+      currentQuotaSettings[selectedProviderId] = {
+        ...currentQuotaSettings[selectedProviderId],
+        enabled: nextMode !== "none",
+        mode: nextMode === "cap" ? "cap" : "target",
+      };
+      renderProviderDetail();
+      setStatus("");
+    });
   });
+
+  const amountInput = providerDetailEl.querySelector<HTMLInputElement>("#quota-amount");
+  amountInput?.addEventListener("input", () => {
+    if (!currentQuotaSettings || !amountInput) {
+      return;
+    }
+    const parsed = Number.parseFloat(amountInput.value);
+    currentQuotaSettings[selectedProviderId] = {
+      ...currentQuotaSettings[selectedProviderId],
+      amount_usd: Number.isFinite(parsed) ? parsed : 0,
+    };
+    setStatus("");
+  });
+
 }
 
 async function loadSettings() {
-  const [quotaSettings, dashboardSettings] = await Promise.all([
-    invoke<QuotaSettings>("get_quota_settings"),
+  const [quotaSettings, dashboardSettings, summaries] = await Promise.all([
+    invoke<ProviderQuotaSettings>("get_provider_quota_settings"),
     invoke<DashboardSettings>("get_dashboard_settings"),
+    invoke<ProviderSettingsSummary[]>("get_provider_settings_summaries"),
   ]);
-  applySettings(quotaSettings);
-  applyDashboardSettings(dashboardSettings);
+
+  currentQuotaSettings = normalizeProviderQuotaSettings(quotaSettings);
+  currentDashboardSettings = dashboardSettings;
+  providerSummaries = summaries;
+
+  const preferredProvider = dashboardSettings.current_provider as ProviderId;
+  selectedProviderId = PROVIDER_IDS.includes(preferredProvider) ? preferredProvider : "codex";
+
+  renderProviderList();
+  renderProviderDetail();
   setStatus("");
 }
 
 async function saveSettings(event: SubmitEvent) {
   event.preventDefault();
 
-  if (!enabledEl || !amountEl || !saveButtonEl || !providerCodexEl || !providerClaudeEl) {
+  if (!saveButtonEl || !currentDashboardSettings || !currentQuotaSettings) {
     return;
   }
 
-  const parsed = Number.parseFloat(amountEl.value);
-  const settings: QuotaSettings = {
-    enabled: enabledEl.checked,
-    mode: selectedMode(),
-    amount_usd: Number.isFinite(parsed) ? parsed : 0,
-  };
-
-  if (settings.enabled && (!Number.isFinite(settings.amount_usd) || settings.amount_usd <= 0)) {
-    setStatus("Enter a valid positive USD amount.", true);
-    return;
-  }
-
-  const enabledProviders = [
-    providerCodexEl.checked ? "codex" : null,
-    providerClaudeEl.checked ? "claude" : null,
-  ].filter((provider): provider is string => Boolean(provider));
+  const enabledProviders = currentDashboardSettings.enabled_providers.filter(
+    (provider): provider is ProviderId => PROVIDER_IDS.includes(provider as ProviderId),
+  );
 
   if (!enabledProviders.length) {
     setStatus("Keep at least one provider enabled.", true);
     return;
   }
 
+  const validationError = validateQuotaSettings(currentQuotaSettings, enabledProviders);
+  if (validationError) {
+    setStatus(validationError, true);
+    return;
+  }
+
   const dashboardSettings: DashboardSettings = {
-    always_on_top: currentDashboardSettings?.always_on_top ?? false,
-    current_provider: currentDashboardSettings?.current_provider ?? enabledProviders[0],
+    always_on_top: currentDashboardSettings.always_on_top,
+    current_provider: enabledProviders.includes(currentDashboardSettings.current_provider as ProviderId)
+      ? currentDashboardSettings.current_provider
+      : enabledProviders[0],
     enabled_providers: enabledProviders,
   };
 
@@ -133,12 +340,14 @@ async function saveSettings(event: SubmitEvent) {
   setStatus("Saving...");
 
   try {
-    const [savedQuota, savedDashboard] = await Promise.all([
-      invoke<QuotaSettings>("save_quota_settings", { settings }),
+    const [savedQuotaSettings, savedDashboard] = await Promise.all([
+      invoke<ProviderQuotaSettings>("save_provider_quota_settings", { settings: currentQuotaSettings }),
       invoke<DashboardSettings>("save_dashboard_settings", { settings: dashboardSettings }),
     ]);
-    applySettings(savedQuota);
-    applyDashboardSettings(savedDashboard);
+    currentQuotaSettings = normalizeProviderQuotaSettings(savedQuotaSettings);
+    currentDashboardSettings = savedDashboard;
+    renderProviderList();
+    renderProviderDetail();
     setStatus("Saved");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -149,30 +358,18 @@ async function saveSettings(event: SubmitEvent) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  formEl = document.querySelector("#quota-form");
-  enabledEl = document.querySelector("#quota-enabled");
-  amountEl = document.querySelector("#quota-amount");
+  formEl = document.querySelector("#settings-form");
+  providerListEl = document.querySelector("#provider-list");
+  providerDetailEl = document.querySelector("#provider-detail");
   statusEl = document.querySelector("#form-status");
   saveButtonEl = document.querySelector("#save-button");
-  providerCodexEl = document.querySelector("#provider-codex");
-  providerClaudeEl = document.querySelector("#provider-claude");
-  tabButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".settings-tab"));
-  tabPanels = Array.from(document.querySelectorAll<HTMLElement>(".settings-panel-section"));
 
   formEl?.addEventListener("submit", (event) => void saveSettings(event));
-  tabButtons.forEach((button) => {
-    const tabName = button.dataset.tab === "providers" ? "providers" : "quota";
-    button.addEventListener("click", () => {
-      setActiveTab(tabName);
-    });
-  });
 
   await loadSettings();
-  setActiveTab(currentTab);
 
   await listen("settings-window-opened", async () => {
     await loadSettings();
-    setActiveTab(currentTab);
   });
 
   const currentWindow = getCurrentWindow();

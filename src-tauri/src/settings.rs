@@ -4,16 +4,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
-use crate::domain::{DashboardSettings, QuotaSettings};
+use crate::domain::{DashboardSettings, ProviderQuotaSettings, QuotaSettings};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+const SUPPORTED_PROVIDER_IDS: [&str; 3] = ["codex", "claude", "kimi"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct AppConfig {
-    #[serde(default)]
-    quota: QuotaSettings,
+    #[serde(
+        default = "default_provider_quota_settings",
+        deserialize_with = "deserialize_provider_quota_settings"
+    )]
+    quota: ProviderQuotaSettings,
     #[serde(default)]
     dashboard: DashboardSettings,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            quota: default_provider_quota_settings(),
+            dashboard: DashboardSettings::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,13 +47,21 @@ impl SettingsStore {
         Ok(base.join("codex-cost").join("settings.json"))
     }
 
-    pub fn load_quota_settings(&self) -> Result<QuotaSettings> {
+    pub fn load_quota_settings(&self, provider_id: &str) -> Result<QuotaSettings> {
+        let config = self.load_config()?;
+        quota_settings_for_provider(&config.quota, provider_id)
+    }
+
+    pub fn load_provider_quota_settings(&self) -> Result<ProviderQuotaSettings> {
         let config = self.load_config()?;
         Ok(config.quota)
     }
 
-    pub fn save_quota_settings(&self, settings: &QuotaSettings) -> Result<QuotaSettings> {
-        let normalized = normalize_quota_settings(settings)?;
+    pub fn save_provider_quota_settings(
+        &self,
+        settings: &ProviderQuotaSettings,
+    ) -> Result<ProviderQuotaSettings> {
+        let normalized = normalize_provider_quota_settings(settings)?;
         let mut config = self.load_config()?;
         config.quota = normalized.clone();
         self.persist_config(&config)?;
@@ -115,8 +139,82 @@ pub fn normalize_quota_settings(settings: &QuotaSettings) -> Result<QuotaSetting
     })
 }
 
+pub fn default_provider_quota_settings() -> ProviderQuotaSettings {
+    SUPPORTED_PROVIDER_IDS
+        .into_iter()
+        .map(|provider_id| (provider_id.to_string(), QuotaSettings::default()))
+        .collect()
+}
+
+pub fn normalize_provider_quota_settings(
+    settings: &ProviderQuotaSettings,
+) -> Result<ProviderQuotaSettings> {
+    let mut normalized = default_provider_quota_settings();
+    for provider_id in SUPPORTED_PROVIDER_IDS {
+        if let Some(provider_settings) = settings.get(provider_id) {
+            normalized.insert(
+                provider_id.to_string(),
+                normalize_quota_settings(provider_settings)?,
+            );
+        }
+    }
+    Ok(normalized)
+}
+
+fn quota_settings_for_provider(
+    settings: &ProviderQuotaSettings,
+    provider_id: &str,
+) -> Result<QuotaSettings> {
+    validate_provider_id(provider_id)?;
+    Ok(settings
+        .get(provider_id)
+        .cloned()
+        .unwrap_or_else(QuotaSettings::default))
+}
+
+fn validate_provider_id(provider_id: &str) -> Result<()> {
+    if SUPPORTED_PROVIDER_IDS.contains(&provider_id) {
+        Ok(())
+    } else {
+        anyhow::bail!("unsupported provider: {provider_id}");
+    }
+}
+
+fn deserialize_provider_quota_settings<'de, D>(
+    deserializer: D,
+) -> std::result::Result<ProviderQuotaSettings, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(default_provider_quota_settings());
+    };
+
+    match value {
+        Value::Object(object)
+            if object.contains_key("enabled")
+                || object.contains_key("mode")
+                || object.contains_key("amount_usd") =>
+        {
+            let legacy = serde_json::from_value::<QuotaSettings>(Value::Object(object))
+                .map_err(D::Error::custom)?;
+            let normalized = normalize_quota_settings(&legacy).map_err(D::Error::custom)?;
+            Ok(SUPPORTED_PROVIDER_IDS
+                .into_iter()
+                .map(|provider_id| (provider_id.to_string(), normalized.clone()))
+                .collect())
+        }
+        other => {
+            let provider_settings =
+                serde_json::from_value::<ProviderQuotaSettings>(other).map_err(D::Error::custom)?;
+            normalize_provider_quota_settings(&provider_settings).map_err(D::Error::custom)
+        }
+    }
+}
+
 fn normalize_dashboard_settings(settings: &DashboardSettings) -> DashboardSettings {
-    let supported_provider_order = ["codex", "claude"];
+    let supported_provider_order = ["codex", "claude", "kimi"];
     let mut enabled_providers = settings
         .enabled_providers
         .iter()
@@ -191,8 +289,11 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{normalize_quota_settings, SettingsStore};
-    use crate::domain::{DashboardSettings, QuotaMode, QuotaSettings};
+    use super::{
+        default_provider_quota_settings, normalize_provider_quota_settings,
+        normalize_quota_settings, SettingsStore,
+    };
+    use crate::domain::{DashboardSettings, ProviderQuotaSettings, QuotaMode, QuotaSettings};
 
     fn test_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -213,10 +314,10 @@ mod tests {
         let store = SettingsStore::new(root.join("settings.json"));
 
         let settings = store
-            .load_quota_settings()
+            .load_provider_quota_settings()
             .expect("missing config should default");
 
-        assert_eq!(settings, QuotaSettings::default());
+        assert_eq!(settings, default_provider_quota_settings());
         fs::remove_dir_all(root).expect("temp root should clean up");
     }
 
@@ -243,10 +344,10 @@ mod tests {
         let store = SettingsStore::new(path);
 
         let settings = store
-            .load_quota_settings()
+            .load_provider_quota_settings()
             .expect("partial config should decode");
 
-        assert_eq!(settings, QuotaSettings::default());
+        assert_eq!(settings, default_provider_quota_settings());
         fs::remove_dir_all(root).expect("temp root should clean up");
     }
 
@@ -258,10 +359,10 @@ mod tests {
         let store = SettingsStore::new(path);
 
         let settings = store
-            .load_quota_settings()
+            .load_provider_quota_settings()
             .expect("invalid config should fall back");
 
-        assert_eq!(settings, QuotaSettings::default());
+        assert_eq!(settings, default_provider_quota_settings());
         fs::remove_dir_all(root).expect("temp root should clean up");
     }
 
@@ -286,13 +387,15 @@ mod tests {
             mode: QuotaMode::Cap,
             amount_usd: 12.345,
         };
+        let mut provider_settings = default_provider_quota_settings();
+        provider_settings.insert("codex".to_string(), settings.clone());
 
         let saved = store
-            .save_quota_settings(&settings)
+            .save_provider_quota_settings(&provider_settings)
             .expect("settings should save");
 
         assert_eq!(
-            saved,
+            saved["codex"],
             QuotaSettings {
                 enabled: true,
                 mode: QuotaMode::Cap,
@@ -301,13 +404,72 @@ mod tests {
         );
 
         let persisted = store
-            .load_quota_settings()
+            .load_quota_settings("codex")
             .expect("saved config should reload");
-        assert_eq!(persisted, saved);
+        assert_eq!(persisted, saved["codex"]);
 
         let raw = fs::read_to_string(path).expect("config should exist");
         assert!(raw.contains("\"amount_usd\": 12.35"));
         fs::remove_dir_all(root).expect("temp root should clean up");
+    }
+
+    #[test]
+    fn load_quota_settings_migrates_legacy_global_quota_to_all_providers() {
+        let root = test_root("legacy-quota");
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+  "quota": {
+    "enabled": true,
+    "mode": "cap",
+    "amount_usd": 42.5
+  }
+}"#,
+        )
+        .expect("legacy config should write");
+        let store = SettingsStore::new(path);
+
+        let settings = store
+            .load_provider_quota_settings()
+            .expect("legacy quota should migrate");
+
+        let expected = QuotaSettings {
+            enabled: true,
+            mode: QuotaMode::Cap,
+            amount_usd: 42.5,
+        };
+        assert_eq!(settings.get("codex"), Some(&expected));
+        assert_eq!(settings.get("claude"), Some(&expected));
+        assert_eq!(settings.get("kimi"), Some(&expected));
+        fs::remove_dir_all(root).expect("temp root should clean up");
+    }
+
+    #[test]
+    fn normalize_provider_quota_settings_fills_missing_supported_providers() {
+        let mut settings = ProviderQuotaSettings::new();
+        settings.insert(
+            "claude".to_string(),
+            QuotaSettings {
+                enabled: true,
+                mode: QuotaMode::Target,
+                amount_usd: 30.0,
+            },
+        );
+
+        let normalized =
+            normalize_provider_quota_settings(&settings).expect("provider quotas should normalize");
+
+        assert_eq!(normalized["codex"], QuotaSettings::default());
+        assert_eq!(normalized["kimi"], QuotaSettings::default());
+        assert_eq!(
+            normalized["claude"],
+            QuotaSettings {
+                enabled: true,
+                mode: QuotaMode::Target,
+                amount_usd: 30.0,
+            }
+        );
     }
 
     #[test]

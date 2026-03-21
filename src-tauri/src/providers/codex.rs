@@ -8,7 +8,7 @@ use chrono::{DateTime, Local, NaiveDate, Timelike};
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::domain::{DailyUsage, ModelUsage, TokenUsage, UsageSnapshot};
+use crate::domain::{DailyUsage, ModelUsage, ProviderSettingsSummary, TokenUsage, UsageSnapshot};
 use crate::providers::UsageProvider;
 
 const DEFAULT_FALLBACK_MODEL: &str = "gpt-5";
@@ -43,6 +43,21 @@ impl CodexUsageProvider {
 impl UsageProvider for CodexUsageProvider {
     fn id(&self) -> &'static str {
         "codex"
+    }
+
+    fn settings_summary(&self) -> ProviderSettingsSummary {
+        let has_local_data = self.root.exists() && self.session_files().next().is_some();
+        ProviderSettingsSummary {
+            id: self.id().to_string(),
+            display_name: "Codex".to_string(),
+            description: "Read local Codex session logs.".to_string(),
+            status_label: if has_local_data {
+                "Detected local sessions".to_string()
+            } else {
+                "No local data found".to_string()
+            },
+            has_local_data,
+        }
     }
 
     fn collect_daily_usage(&self, date: NaiveDate) -> Result<DailyUsage> {

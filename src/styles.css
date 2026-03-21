@@ -1,12 +1,12 @@
 :root {
+  color-scheme: dark;
   font-family: "Nunito", "Avenir Next Rounded", "SF Pro Rounded", "Segoe UI", sans-serif;
-  --window-safe-top: 0px;
   --trend-column-width: 136px;
   --amount-column-width: 72px;
   color: #f4efe5;
   background:
-    radial-gradient(circle at top left, rgba(242, 146, 29, 0.18), transparent 22rem),
-    linear-gradient(180deg, #121417 0%, #171a1f 100%);
+    radial-gradient(circle at 10% 8%, rgba(225, 152, 72, 0.05), transparent 13rem),
+    linear-gradient(180deg, #1c2025 0%, #20252c 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -21,11 +21,14 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background:
+    radial-gradient(circle at 10% 8%, rgba(225, 152, 72, 0.05), transparent 13rem),
+    linear-gradient(180deg, #1c2025 0%, #20252c 100%);
 }
 
 .shell {
   min-height: 100vh;
-  padding: calc(var(--window-safe-top) + 12px) 24px 32px;
+  padding: 8px 24px 32px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -40,12 +43,12 @@ body {
 
 .top-actions {
   position: absolute;
-  top: calc(var(--window-safe-top) + 12px);
+  top: 12px;
   right: 24px;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .icon-button {
@@ -54,7 +57,7 @@ body {
   padding: 0;
   border: 0;
   background: transparent;
-  color: rgba(244, 239, 229, 0.48);
+  color: rgba(244, 239, 229, 0.38);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -89,7 +92,7 @@ body {
 
 .toast {
   position: absolute;
-  top: 24px;
+  top: 16px;
   left: 24px;
   right: 24px;
   display: flex;
@@ -125,7 +128,7 @@ body {
 
 .hero {
   padding: 0 0 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .hero-head {
@@ -140,17 +143,20 @@ body {
 }
 
 .hero-toolbar {
-  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
 }
 
 .provider-switcher {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px;
+  padding: 3px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(255, 255, 255, 0.045);
 }
 
 .provider-chip {
@@ -159,7 +165,7 @@ body {
   border-radius: 999px;
   background: transparent;
   color: rgba(244, 239, 229, 0.62);
-  padding: 7px 12px;
+  padding: 7px 11px;
   font: inherit;
   font-size: 0.78rem;
   font-weight: 800;
@@ -263,7 +269,7 @@ body {
   grid-column: 3 / span 2;
   height: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
   overflow: hidden;
   align-self: center;
 }
@@ -284,7 +290,7 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
   padding: 0 0 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .metric-item {
@@ -305,7 +311,7 @@ body {
   font-size: 0.74rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  color: rgba(244, 239, 229, 0.44);
+  color: rgba(244, 239, 229, 0.4);
 }
 
 .metrics strong {
@@ -323,7 +329,7 @@ body {
   margin: 0;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: rgba(244, 239, 229, 0.44);
+  color: rgba(244, 239, 229, 0.4);
 }
 
 .model-list {
@@ -333,7 +339,7 @@ body {
 
 .model-card {
   padding: 14px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
 }
 
 .model-card h3 {
@@ -453,11 +459,11 @@ body {
 
 @media (max-width: 520px) {
   .shell {
-    padding: calc(var(--window-safe-top) + 4px) 16px 20px;
+    padding: 4px 16px 20px;
   }
 
   .top-actions {
-    top: calc(var(--window-safe-top) + 4px);
+    top: 8px;
     right: 16px;
   }
 
@@ -479,6 +485,12 @@ body {
   .provider-switcher {
     width: 100%;
     justify-content: stretch;
+  }
+
+  .hero-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 
   .provider-chip {

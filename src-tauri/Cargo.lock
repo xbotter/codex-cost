@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cost"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "arboard",
@@ -516,6 +516,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "toml 0.8.2",
  "walkdir",
 ]
 

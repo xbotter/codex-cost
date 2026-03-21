@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Local};
-use domain::{AppSnapshot, DashboardSettings, QuotaSettings};
+use domain::{AppSnapshot, DashboardSettings, ProviderQuotaSettings, ProviderSettingsSummary};
 use service::{
     billable_input_tokens, build_error_snapshot, format_token_count, provider_display_name,
     total_output_tokens, UsageAppService,
@@ -22,7 +22,7 @@ use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::WindowEvent;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, WebviewUrl, WebviewWindowBuilder};
 
 const TRAY_ID: &str = "usage-tray";
 const MENU_STATUS: &str = "status";
@@ -69,22 +69,36 @@ fn get_dashboard_settings(state: tauri::State<'_, AppState>) -> Result<Dashboard
 }
 
 #[tauri::command]
-fn get_quota_settings(state: tauri::State<'_, AppState>) -> Result<QuotaSettings, String> {
+fn get_provider_quota_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<ProviderQuotaSettings, String> {
     state
         .service
-        .load_quota_settings()
+        .load_provider_quota_settings()
         .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
-fn save_quota_settings(
+fn get_provider_settings_summaries(
+    state: tauri::State<'_, AppState>,
+) -> Vec<ProviderSettingsSummary> {
+    state.service.load_provider_settings_summaries()
+}
+
+#[tauri::command]
+fn open_settings_window(app: AppHandle) {
+    show_settings(&app);
+}
+
+#[tauri::command]
+fn save_provider_quota_settings(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
-    settings: QuotaSettings,
-) -> Result<QuotaSettings, String> {
+    settings: ProviderQuotaSettings,
+) -> Result<ProviderQuotaSettings, String> {
     let saved = state
         .service
-        .save_quota_settings(&settings)
+        .save_provider_quota_settings(&settings)
         .map_err(|error| format!("{error:#}"))?;
 
     let snapshot = refresh_state(&app, &state, false);
@@ -163,7 +177,7 @@ fn set_current_provider(
     state: tauri::State<'_, AppState>,
     provider_id: String,
 ) -> Result<AppSnapshot, String> {
-    if !matches!(provider_id.as_str(), "codex" | "claude") {
+    if !matches!(provider_id.as_str(), "codex" | "claude" | "kimi") {
         return Err(format!("unsupported provider: {provider_id}"));
     }
 
@@ -256,10 +270,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_dashboard_settings,
-            get_quota_settings,
+            get_provider_quota_settings,
+            get_provider_settings_summaries,
+            open_settings_window,
             refresh_snapshot,
             save_dashboard_settings,
-            save_quota_settings,
+            save_provider_quota_settings,
             toggle_dashboard_always_on_top,
             set_current_provider,
             copy_dashboard_image_to_clipboard
@@ -552,6 +568,8 @@ fn show_dashboard(app: &AppHandle) {
 
 fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(760.0, 660.0))));
+        let _ = window.set_size(Size::Logical(LogicalSize::new(860.0, 760.0)));
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -562,8 +580,8 @@ fn show_settings(app: &AppHandle) {
     if let Ok(window) =
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("codex-cost settings")
-            .inner_size(460.0, 380.0)
-            .min_inner_size(460.0, 380.0)
+            .inner_size(860.0, 760.0)
+            .min_inner_size(760.0, 660.0)
             .resizable(true)
             .visible(true)
             .build()

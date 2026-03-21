@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toPng } from "html-to-image";
 import pinIcon from "lucide-static/icons/pin.svg?raw";
 import pinOffIcon from "lucide-static/icons/pin-off.svg?raw";
+import settingsIcon from "lucide-static/icons/settings-2.svg?raw";
 import shareIcon from "lucide-static/icons/share.svg?raw";
 
 type TokenUsage = {
@@ -69,6 +70,7 @@ let totalsEl: HTMLElement | null;
 let quotaRowEl: HTMLElement | null;
 let modelsEl: HTMLElement | null;
 let providerSwitcherEl: HTMLElement | null;
+let settingsButtonEl: HTMLButtonElement | null;
 let pinButtonEl: HTMLButtonElement | null;
 let shareButtonEl: HTMLButtonElement | null;
 let toastEl: HTMLElement | null;
@@ -79,6 +81,7 @@ let providerSwitchInFlight = false;
 const PROVIDERS = [
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude Code" },
+  { id: "kimi", label: "Kimi Code" },
 ] as const;
 
 function usd(value: number) {
@@ -205,6 +208,10 @@ function pinIconMarkup(pinned: boolean) {
 
 function screenshotIconMarkup() {
   return normalizeLucide(shareIcon);
+}
+
+function settingsIconMarkup() {
+  return normalizeLucide(settingsIcon);
 }
 
 function emptyStateMarkup(snapshot: AppSnapshot) {
@@ -408,13 +415,30 @@ window.addEventListener("DOMContentLoaded", async () => {
   quotaRowEl = document.querySelector("#quota-row");
   modelsEl = document.querySelector("#models");
   providerSwitcherEl = document.querySelector("#provider-switcher");
+  settingsButtonEl = document.querySelector("#settings-button");
   pinButtonEl = document.querySelector("#pin-button");
   shareButtonEl = document.querySelector("#share-button");
   toastEl = document.querySelector("#toast");
 
+  if (settingsButtonEl) {
+    settingsButtonEl.innerHTML = settingsIconMarkup();
+  }
+
   if (shareButtonEl) {
     shareButtonEl.innerHTML = screenshotIconMarkup();
   }
+
+  settingsButtonEl?.addEventListener("click", async () => {
+    settingsButtonEl!.disabled = true;
+    try {
+      await invoke("open_settings_window");
+    } catch (error) {
+      console.error(error);
+      showToast("Open settings failed", "error");
+    } finally {
+      settingsButtonEl!.disabled = false;
+    }
+  });
 
   pinButtonEl?.addEventListener("click", async () => {
     pinButtonEl!.disabled = true;
