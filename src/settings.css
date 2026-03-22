@@ -36,6 +36,38 @@
   box-sizing: border-box;
 }
 
+html {
+  scrollbar-color: color-mix(in srgb, var(--text) 18%, transparent) color-mix(in srgb, var(--text) 5%, transparent);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 28%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 html,
 body {
   margin: 0;

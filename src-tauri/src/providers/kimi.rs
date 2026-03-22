@@ -185,6 +185,41 @@ impl UsageProvider for KimiUsageProvider {
             skipped_log_files,
         })
     }
+
+    fn collect_daily_usage_series(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<DailyUsage>> {
+        if !self.root.exists() || start > end {
+            return Ok(Vec::new());
+        }
+
+        let mut per_day_model = BTreeMap::<NaiveDate, BTreeMap<String, TokenUsage>>::new();
+        let default_model_name = self.default_model_name();
+
+        for path in self.session_files() {
+            let contents = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+
+            let parsed = parse_wire_jsonl_range(&contents, start, end, &default_model_name)?;
+            for snapshot in parsed.snapshots {
+                let date = local_date_from_rfc3339(&snapshot.timestamp)
+                    .context("invalid usage timestamp")?;
+                per_day_model
+                    .entry(date)
+                    .or_default()
+                    .entry(snapshot.model_name)
+                    .or_default()
+                    .add_assign(&snapshot.usage);
+            }
+        }
+
+        Ok(per_day_model
+            .into_iter()
+            .map(|(date, per_model)| build_daily_usage_without_timeline(self.id(), date, per_model))
+            .collect())
+    }
 }
 
 struct ParsedWireJsonl {
@@ -197,6 +232,28 @@ fn parse_wire_jsonl(
     target_date: NaiveDate,
     default_model_name: &str,
 ) -> Result<ParsedWireJsonl> {
+    parse_wire_jsonl_with_filter(contents, default_model_name, |date| date == target_date)
+}
+
+fn parse_wire_jsonl_range(
+    contents: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+    default_model_name: &str,
+) -> Result<ParsedWireJsonl> {
+    parse_wire_jsonl_with_filter(contents, default_model_name, |date| {
+        date >= start && date <= end
+    })
+}
+
+fn parse_wire_jsonl_with_filter<F>(
+    contents: &str,
+    default_model_name: &str,
+    include_date: F,
+) -> Result<ParsedWireJsonl>
+where
+    F: Fn(NaiveDate) -> bool,
+{
     let mut snapshots = Vec::new();
     let mut skipped_line_count = 0u64;
     let mut current_model = default_model_name.to_string();
@@ -246,7 +303,7 @@ fn parse_wire_jsonl(
             continue;
         };
 
-        if local_timestamp.date_naive() != target_date {
+        if !include_date(local_timestamp.date_naive()) {
             continue;
         }
 
@@ -314,11 +371,54 @@ fn epoch_to_local_datetime(timestamp: f64) -> Option<DateTime<Local>> {
     DateTime::<Utc>::from_timestamp_millis(millis).map(|value| value.with_timezone(&Local))
 }
 
+fn local_date_from_rfc3339(timestamp: &str) -> Option<NaiveDate> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|value| value.with_timezone(&Local).date_naive())
+}
+
 fn half_hour_bucket_index(timestamp: &str) -> Option<usize> {
     let local = DateTime::parse_from_rfc3339(timestamp)
         .ok()?
         .with_timezone(&Local);
     Some((local.hour() as usize) * 2 + usize::from(local.minute() >= 30))
+}
+
+fn build_daily_usage_without_timeline(
+    provider_id: &str,
+    date: NaiveDate,
+    per_model: BTreeMap<String, TokenUsage>,
+) -> DailyUsage {
+    let mut totals = TokenUsage::default();
+    let mut model_breakdown: Vec<_> = per_model
+        .into_iter()
+        .map(|(model_name, usage)| {
+            totals.add_assign(&usage);
+            ModelUsage {
+                model_name,
+                usage,
+                usage_timeline: vec![TokenUsage::default(); 48],
+            }
+        })
+        .collect();
+    model_breakdown.sort_by(|left, right| {
+        Reverse(left.usage.total_tokens())
+            .cmp(&Reverse(right.usage.total_tokens()))
+            .then_with(|| {
+                Reverse(left.usage.output_tokens).cmp(&Reverse(right.usage.output_tokens))
+            })
+            .then_with(|| Reverse(left.usage.input_tokens).cmp(&Reverse(right.usage.input_tokens)))
+            .then_with(|| left.model_name.cmp(&right.model_name))
+    });
+
+    DailyUsage {
+        provider_id: provider_id.to_string(),
+        date: date.to_string(),
+        model_breakdown,
+        totals,
+        skipped_log_lines: 0,
+        skipped_log_files: 0,
+    }
 }
 
 #[cfg(test)]

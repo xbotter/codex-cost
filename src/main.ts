@@ -9,6 +9,8 @@ import pinIcon from "lucide-static/icons/pin.svg?raw";
 import pinOffIcon from "lucide-static/icons/pin-off.svg?raw";
 import settingsIcon from "lucide-static/icons/settings-2.svg?raw";
 import shareIcon from "lucide-static/icons/share.svg?raw";
+import calendarIcon from "lucide-static/icons/calendar-range.svg?raw";
+import loaderIcon from "lucide-static/icons/loader-circle.svg?raw";
 
 type TokenUsage = {
   input_tokens: number;
@@ -45,6 +47,17 @@ type SnapshotWarning = {
   message: string;
 };
 
+type HeatmapDay = {
+  date: string;
+  total_cost_usd: number;
+};
+
+type UsageHeatmap = {
+  provider_id: string;
+  today: string;
+  days: HeatmapDay[];
+};
+
 type AppSnapshot = {
   provider_id: string;
   enabled_provider_ids: string[];
@@ -65,11 +78,16 @@ type AppSnapshot = {
 };
 
 let summaryEl: HTMLElement | null;
+let summaryLabelEl: HTMLElement | null;
 let summaryTrendEl: HTMLElement | null;
+let summaryTriggerEl: HTMLElement | null;
+let heroMainEl: HTMLElement | null;
+let heatmapPanelEl: HTMLElement | null;
 let totalsEl: HTMLElement | null;
 let quotaRowEl: HTMLElement | null;
 let modelsEl: HTMLElement | null;
 let providerSwitcherEl: HTMLElement | null;
+let heatmapButtonEl: HTMLButtonElement | null;
 let settingsButtonEl: HTMLButtonElement | null;
 let pinButtonEl: HTMLButtonElement | null;
 let shareButtonEl: HTMLButtonElement | null;
@@ -77,6 +95,12 @@ let toastEl: HTMLElement | null;
 let toastTimer: number | undefined;
 let currentProviderId = "codex";
 let providerSwitchInFlight = false;
+let liveSnapshot: AppSnapshot | null = null;
+let renderedSnapshot: AppSnapshot | null = null;
+let heatmapData: UsageHeatmap | null = null;
+let heatmapVisible = false;
+let heatmapLoading = false;
+let heatmapWarmupRequestedForProvider: string | null = null;
 
 const PROVIDERS = [
   { id: "codex", label: "Codex" },
@@ -90,6 +114,14 @@ function usd(value: number) {
 
 function providerLabel(providerId: string) {
   return PROVIDERS.find((provider) => provider.id === providerId)?.label ?? "Codex";
+}
+
+function formatShortDate(value: string) {
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(parsed);
 }
 
 function formatTokens(value: number) {
@@ -156,6 +188,15 @@ function currentHalfHourBucket(timestamp: string) {
   return Math.max(0, Math.min(47, bucket));
 }
 
+function currentBucketForSnapshot(snapshot: AppSnapshot) {
+  const today = new Date().toLocaleDateString("en-CA");
+  if (snapshot.date !== today) {
+    return 47;
+  }
+
+  return currentHalfHourBucket(snapshot.last_refreshed_at);
+}
+
 function sparklineMarkup(points: number[], currentBucket: number) {
   const width = 136;
   const height = 28;
@@ -214,12 +255,203 @@ function settingsIconMarkup() {
   return normalizeLucide(settingsIcon);
 }
 
+function heatmapIconMarkup() {
+  return normalizeLucide(calendarIcon);
+}
+
+function loadingIconMarkup() {
+  return normalizeLucide(loaderIcon);
+}
+
 function emptyStateMarkup(snapshot: AppSnapshot) {
   if (snapshot.provider_id === "claude" && snapshot.warning) {
     return `<div class="empty is-warning">${snapshot.warning.message}</div>`;
   }
 
+  if (isInitialLoadingSnapshot(snapshot)) {
+    return `<div class="empty">Analyzing local usage…</div>`;
+  }
+
   return `<div class="empty">No ${providerLabel(snapshot.provider_id)} usage found for today.</div>`;
+}
+
+function isInitialLoadingSnapshot(snapshot: AppSnapshot) {
+  return (
+    snapshot.title === "--"
+    && !snapshot.error_message
+    && snapshot.model_costs.length === 0
+    && snapshot.total_cost_usd === 0
+  );
+}
+
+function buildHeatmapGrid(days: HeatmapDay[]) {
+  if (!days.length) {
+    return { monthLabels: "", weeksMarkup: "", weekCount: 0 };
+  }
+
+  const byDate = new Map(days.map((day) => [day.date, day]));
+  const first = new Date(`${days[0].date}T00:00:00`);
+  const last = new Date(`${days[days.length - 1].date}T00:00:00`);
+  const start = new Date(first);
+  start.setDate(start.getDate() - start.getDay());
+  const end = new Date(last);
+  end.setDate(end.getDate() + (6 - end.getDay()));
+
+  const allDays: Array<HeatmapDay | null> = [];
+  for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    const key = cursor.toISOString().slice(0, 10);
+    allDays.push(byDate.get(key) ?? null);
+  }
+
+  const weeks: Array<Array<HeatmapDay | null>> = [];
+  for (let index = 0; index < allDays.length; index += 7) {
+    weeks.push(allDays.slice(index, index + 7));
+  }
+
+  const maxCost = Math.max(...days.map((day) => day.total_cost_usd), 0);
+  const levelFor = (value: number) => {
+    if (value <= 0 || maxCost <= 0) return 0;
+    const ratio = value / maxCost;
+    if (ratio < 0.25) return 1;
+    if (ratio < 0.5) return 2;
+    if (ratio < 0.75) return 3;
+    return 4;
+  };
+
+  const monthLabels = weeks
+    .map((week, index) => {
+      const firstRealDay = week.find(Boolean);
+      if (!firstRealDay) {
+        return `<span></span>`;
+      }
+      const date = new Date(`${firstRealDay.date}T00:00:00`);
+      const showLabel = index === 0 || date.getDate() <= 7;
+      return `<span>${showLabel ? date.toLocaleString(undefined, { month: "short" }) : ""}</span>`;
+    })
+    .join("");
+
+  const weeksMarkup = weeks
+    .map(
+      (week) => `
+        <div class="heatmap-week">
+          ${week
+            .map((day) => {
+              if (!day) {
+                return `<span class="heatmap-day is-empty" aria-hidden="true"></span>`;
+              }
+
+              const isSelected = renderedSnapshot?.date === day.date;
+              return `
+                <button
+                  class="heatmap-day level-${levelFor(day.total_cost_usd)}${isSelected ? " is-selected" : ""}"
+                  type="button"
+                  data-heatmap-date="${day.date}"
+                  title="${day.date}: ${usd(day.total_cost_usd)}"
+                ></button>
+              `;
+            })
+            .join("")}
+        </div>
+      `,
+    )
+    .join("");
+
+  return { monthLabels, weeksMarkup, weekCount: weeks.length };
+}
+
+async function loadHeatmap(force = false) {
+  if (!renderedSnapshot) {
+    return;
+  }
+
+  if (!force && heatmapData?.provider_id === renderedSnapshot.provider_id) {
+    return;
+  }
+
+  heatmapLoading = true;
+  renderHeatmap();
+  try {
+    heatmapData = await invoke<UsageHeatmap>("get_usage_heatmap", {
+      providerId: renderedSnapshot.provider_id,
+      weeks: 26,
+    });
+  } catch (error) {
+    console.error(error);
+    showToast("Load dates failed", "error");
+  } finally {
+    heatmapLoading = false;
+    renderHeatmap();
+  }
+}
+
+function requestHeatmapWarmup() {
+  if (!renderedSnapshot) {
+    return;
+  }
+
+  const providerId = renderedSnapshot.provider_id;
+  if (heatmapWarmupRequestedForProvider === providerId) {
+    return;
+  }
+
+  heatmapWarmupRequestedForProvider = providerId;
+  renderHeatmap();
+  void invoke("warm_usage_history", {
+    providerId,
+    weeks: 26,
+  }).catch((error) => {
+    console.error(error);
+    heatmapWarmupRequestedForProvider = null;
+    renderHeatmap();
+  });
+}
+
+function isHeatmapBusyForCurrentProvider() {
+  return Boolean(
+    renderedSnapshot
+    && (heatmapLoading || heatmapWarmupRequestedForProvider === renderedSnapshot.provider_id),
+  );
+}
+
+function renderHeatmap() {
+  if (!heatmapPanelEl || !summaryTriggerEl || !heroMainEl || !heatmapButtonEl || !renderedSnapshot) {
+    return;
+  }
+
+  summaryTriggerEl.setAttribute("aria-expanded", String(heatmapVisible));
+  heroMainEl.classList.toggle("is-heatmap-open", heatmapVisible);
+  heatmapButtonEl.setAttribute("aria-pressed", String(heatmapVisible));
+  heatmapButtonEl.classList.toggle("is-active", heatmapVisible);
+  heatmapButtonEl.classList.toggle("is-loading", isHeatmapBusyForCurrentProvider());
+  heatmapButtonEl.innerHTML = isHeatmapBusyForCurrentProvider() ? loadingIconMarkup() : heatmapIconMarkup();
+  heatmapPanelEl.hidden = !heatmapVisible;
+  if (!heatmapVisible) {
+    return;
+  }
+
+  if (heatmapLoading) {
+    heatmapPanelEl.innerHTML = `<div class="heatmap-empty">Loading dates…</div>`;
+    return;
+  }
+
+  if (!heatmapData || !heatmapData.days.length) {
+    heatmapPanelEl.innerHTML = `<div class="heatmap-empty">No recent history.</div>`;
+    return;
+  }
+
+  const { monthLabels, weeksMarkup, weekCount } = buildHeatmapGrid(heatmapData.days);
+  const isToday = renderedSnapshot.date === heatmapData.today;
+
+  heatmapPanelEl.innerHTML = `
+    <div class="heatmap-head">
+      <div class="heatmap-caption">Recent dates</div>
+      <button class="heatmap-today" type="button" ${isToday ? "disabled" : ""}>Today</button>
+    </div>
+    <div class="heatmap-calendar">
+      <div class="heatmap-months" style="grid-template-columns: repeat(${weekCount}, var(--heatmap-cell-size));">${monthLabels}</div>
+      <div class="heatmap-grid">${weeksMarkup}</div>
+    </div>
+  `;
 }
 
 function showToast(message: string, kind: "success" | "error" = "success") {
@@ -284,8 +516,14 @@ async function copyDashboardSnapshot() {
 }
 
 function render(snapshot: AppSnapshot) {
+  renderedSnapshot = snapshot;
   currentProviderId = snapshot.provider_id;
-  const currentBucket = currentHalfHourBucket(snapshot.last_refreshed_at);
+  const currentBucket = currentBucketForSnapshot(snapshot);
+  const isToday =
+    (heatmapData && snapshot.date === heatmapData.today)
+    || (liveSnapshot
+      && snapshot.provider_id === liveSnapshot.provider_id
+      && snapshot.date === liveSnapshot.date);
 
   if (providerSwitcherEl) {
     const enabledProviders = PROVIDERS.filter((provider) =>
@@ -312,6 +550,10 @@ function render(snapshot: AppSnapshot) {
     summaryEl.textContent = usd(snapshot.total_cost_usd);
   }
 
+  if (summaryLabelEl) {
+    summaryLabelEl.textContent = isToday ? "Today" : formatShortDate(snapshot.date);
+  }
+
   if (pinButtonEl) {
     pinButtonEl.innerHTML = pinIconMarkup(snapshot.dashboard_always_on_top);
     pinButtonEl.classList.toggle("is-active", snapshot.dashboard_always_on_top);
@@ -323,7 +565,16 @@ function render(snapshot: AppSnapshot) {
   }
 
   if (summaryTrendEl) {
-    summaryTrendEl.innerHTML = sparklineMarkup(snapshot.total_cost_sparkline, currentBucket);
+    const showSummaryTrend = isToday;
+    summaryTrendEl.hidden = !showSummaryTrend;
+    summaryTrendEl.innerHTML = showSummaryTrend
+      ? sparklineMarkup(snapshot.total_cost_sparkline, currentBucket)
+      : "";
+  }
+
+  const summaryRowEl = summaryEl?.closest(".summary-row");
+  if (summaryRowEl) {
+    summaryRowEl.classList.toggle("is-history", !isToday);
   }
 
   if (quotaRowEl) {
@@ -382,9 +633,9 @@ function render(snapshot: AppSnapshot) {
       .map(
         (item) => `
           <article class="model-card">
-            <div class="model-row">
+            <div class="model-row${isToday ? "" : " is-history"}">
               <h3>${item.model_name}</h3>
-              <div class="model-trend">${sparklineMarkup(item.cost_sparkline, currentBucket)}</div>
+              ${isToday ? `<div class="model-trend">${sparklineMarkup(item.cost_sparkline, currentBucket)}</div>` : ""}
               <strong>${usd(item.total_cost_usd)}</strong>
             </div>
             <div class="model-metrics">
@@ -406,15 +657,22 @@ function render(snapshot: AppSnapshot) {
       )
       .join("");
   }
+
+  renderHeatmap();
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
   summaryEl = document.querySelector("#summary");
+  summaryLabelEl = document.querySelector("#summary-label");
   summaryTrendEl = document.querySelector("#summary-trend");
+  summaryTriggerEl = document.querySelector("#summary-trigger");
+  heroMainEl = document.querySelector("#hero-main");
+  heatmapPanelEl = document.querySelector("#heatmap-panel");
   totalsEl = document.querySelector("#totals");
   quotaRowEl = document.querySelector("#quota-row");
   modelsEl = document.querySelector("#models");
   providerSwitcherEl = document.querySelector("#provider-switcher");
+  heatmapButtonEl = document.querySelector("#heatmap-button");
   settingsButtonEl = document.querySelector("#settings-button");
   pinButtonEl = document.querySelector("#pin-button");
   shareButtonEl = document.querySelector("#share-button");
@@ -426,6 +684,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   if (shareButtonEl) {
     shareButtonEl.innerHTML = screenshotIconMarkup();
+  }
+
+  if (heatmapButtonEl) {
+    heatmapButtonEl.innerHTML = heatmapIconMarkup();
   }
 
   settingsButtonEl?.addEventListener("click", async () => {
@@ -457,6 +719,32 @@ window.addEventListener("DOMContentLoaded", async () => {
     void copyDashboardSnapshot();
   });
 
+  heatmapButtonEl?.addEventListener("click", async () => {
+    heatmapVisible = !heatmapVisible;
+    renderHeatmap();
+    if (heatmapVisible) {
+      await loadHeatmap(true);
+      requestHeatmapWarmup();
+    }
+  });
+
+  heatmapPanelEl?.addEventListener("click", async (event) => {
+    const target = event.target as HTMLElement;
+    const dateButton = target.closest<HTMLElement>("[data-heatmap-date]");
+    if (dateButton?.dataset.heatmapDate && renderedSnapshot) {
+      const snapshot = await invoke<AppSnapshot>("get_snapshot_for_date", {
+        providerId: renderedSnapshot.provider_id,
+        date: dateButton.dataset.heatmapDate,
+      });
+      render(snapshot);
+      return;
+    }
+
+    if (target.closest(".heatmap-today") && liveSnapshot) {
+      render(liveSnapshot);
+    }
+  });
+
   providerSwitcherEl?.addEventListener("click", async (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-provider-id]");
     const providerId = button?.dataset.providerId;
@@ -469,20 +757,60 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     try {
       const snapshot = await invoke<AppSnapshot>("set_current_provider", { providerId });
+      liveSnapshot = snapshot;
+      heatmapData = null;
+      heatmapWarmupRequestedForProvider = null;
       render(snapshot);
+      if (heatmapVisible) {
+        await loadHeatmap(true);
+        requestHeatmapWarmup();
+      }
     } catch (error) {
       console.error(error);
       showToast("Switch failed", "error");
     } finally {
       providerSwitchInFlight = false;
-      render(await invoke<AppSnapshot>("get_snapshot"));
+      const latest = await invoke<AppSnapshot>("get_snapshot");
+      liveSnapshot = latest;
+      if (renderedSnapshot?.date === latest.date && renderedSnapshot.provider_id === latest.provider_id) {
+        render(latest);
+      } else {
+        renderHeatmap();
+      }
     }
   });
 
   const snapshot = await invoke<AppSnapshot>("get_snapshot");
+  liveSnapshot = snapshot;
+  heatmapData = null;
+  heatmapWarmupRequestedForProvider = null;
   render(snapshot);
 
   await listen<AppSnapshot>("snapshot-updated", (event) => {
-    render(event.payload);
+    liveSnapshot = event.payload;
+    if (
+      !renderedSnapshot
+      || (renderedSnapshot.provider_id === event.payload.provider_id
+        && renderedSnapshot.date === event.payload.date)
+    ) {
+      render(event.payload);
+    } else if (heatmapVisible && heatmapData?.provider_id === event.payload.provider_id) {
+      void loadHeatmap(true);
+    }
+  });
+
+  await listen<{ providerId: string }>("usage-history-warmed", (event) => {
+    if (heatmapWarmupRequestedForProvider === event.payload.providerId) {
+      heatmapWarmupRequestedForProvider = null;
+    }
+
+    if (!renderedSnapshot || renderedSnapshot.provider_id !== event.payload.providerId) {
+      return;
+    }
+
+    renderHeatmap();
+    if (heatmapVisible) {
+      void loadHeatmap(true);
+    }
   });
 });

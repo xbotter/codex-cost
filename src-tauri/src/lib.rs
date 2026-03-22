@@ -3,8 +3,10 @@ mod pricing;
 mod providers;
 mod service;
 mod settings;
+mod snapshot_store;
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -13,7 +15,9 @@ use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Local};
-use domain::{AppSnapshot, DashboardSettings, ProviderQuotaSettings, ProviderSettingsSummary};
+use domain::{
+    AppSnapshot, DashboardSettings, ProviderQuotaSettings, ProviderSettingsSummary, UsageHeatmap,
+};
 use service::{
     billable_input_tokens, build_error_snapshot, format_token_count, provider_display_name,
     total_output_tokens, UsageAppService,
@@ -39,6 +43,7 @@ struct AppState {
     status_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
     tokens_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
     updated_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
+    warming_history_providers: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -51,6 +56,7 @@ impl AppState {
             status_item: Arc::new(Mutex::new(None)),
             tokens_item: Arc::new(Mutex::new(None)),
             updated_item: Arc::new(Mutex::new(None)),
+            warming_history_providers: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -88,6 +94,79 @@ fn get_provider_settings_summaries(
 #[tauri::command]
 fn open_settings_window(app: AppHandle) {
     show_settings(&app);
+}
+
+#[tauri::command]
+fn get_snapshot_for_date(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    date: String,
+) -> Result<AppSnapshot, String> {
+    let parsed_date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        .map_err(|error| format!("invalid date: {error}"))?;
+
+    state
+        .service
+        .snapshot_for_date(&provider_id, parsed_date)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn get_usage_heatmap(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    weeks: Option<usize>,
+) -> Result<UsageHeatmap, String> {
+    state
+        .service
+        .load_usage_heatmap(&provider_id, weeks.unwrap_or(26))
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryWarmEvent {
+    provider_id: String,
+}
+
+#[tauri::command]
+fn warm_usage_history(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    weeks: Option<usize>,
+) -> Result<(), String> {
+    let weeks = weeks.unwrap_or(26);
+    {
+        let mut inflight = state.warming_history_providers.lock().unwrap();
+        if !inflight.insert(provider_id.clone()) {
+            return Ok(());
+        }
+    }
+
+    let service = state.service.clone();
+    let inflight = state.warming_history_providers.clone();
+    thread::spawn(move || {
+        let result = service.warm_usage_history(&provider_id, weeks);
+        inflight.lock().unwrap().remove(&provider_id);
+
+        if let Err(error) = result {
+            eprintln!(
+                "failed to warm usage history for {}: {error:#}",
+                provider_id
+            );
+            return;
+        }
+
+        let _ = app.emit(
+            "usage-history-warmed",
+            HistoryWarmEvent {
+                provider_id: provider_id.clone(),
+            },
+        );
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -273,6 +352,9 @@ pub fn run() {
             get_provider_quota_settings,
             get_provider_settings_summaries,
             open_settings_window,
+            get_snapshot_for_date,
+            get_usage_heatmap,
+            warm_usage_history,
             refresh_snapshot,
             save_dashboard_settings,
             save_provider_quota_settings,

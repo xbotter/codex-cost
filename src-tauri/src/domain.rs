@@ -139,6 +139,19 @@ pub struct UsageSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeatmapDay {
+    pub date: String,
+    pub total_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageHeatmap {
+    pub provider_id: String,
+    pub today: String,
+    pub days: Vec<HeatmapDay>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DailyUsage {
     pub provider_id: String,
     pub date: String,

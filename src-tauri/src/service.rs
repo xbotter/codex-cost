@@ -1,24 +1,28 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::{Days, Local, NaiveDate};
 
 use crate::domain::{
-    AppSnapshot, CostBreakdown, DailyUsage, DashboardSettings, PriceQuote, ProviderQuotaSettings,
-    ProviderSettingsSummary, QuotaMode, QuotaSettings, QuotaSnapshot, SnapshotWarning, TokenUsage,
+    AppSnapshot, CostBreakdown, DailyUsage, DashboardSettings, HeatmapDay, PriceQuote,
+    ProviderQuotaSettings, ProviderSettingsSummary, QuotaMode, QuotaSettings, QuotaSnapshot,
+    SnapshotWarning, TokenUsage, UsageHeatmap,
 };
 use crate::pricing::{find_price_quote, normalize_model_for_pricing, PricingCache, PricingStore};
 use crate::providers::{
     claude::ClaudeUsageProvider, codex::CodexUsageProvider, kimi::KimiUsageProvider, UsageProvider,
 };
 use crate::settings::SettingsStore;
+use crate::snapshot_store::SnapshotStore;
 
 #[derive(Clone)]
 pub struct UsageAppService {
     providers: Vec<Arc<dyn UsageProvider>>,
     pricing_store: PricingStore,
     settings_store: SettingsStore,
+    snapshot_store: SnapshotStore,
 }
 
 pub fn format_token_count(value: u64) -> String {
@@ -59,6 +63,7 @@ impl UsageAppService {
         let kimi_config = KimiUsageProvider::default_config_path()?;
         let pricing_cache = PricingStore::default_cache_path()?;
         let settings_path = SettingsStore::default_config_path()?;
+        let snapshot_root = SnapshotStore::default_root()?;
 
         Ok(Self {
             providers: vec![
@@ -70,56 +75,19 @@ impl UsageAppService {
             ],
             pricing_store: PricingStore::new(pricing_cache, Duration::from_secs(60 * 60 * 24)),
             settings_store: SettingsStore::new(settings_path),
+            snapshot_store: SnapshotStore::new(snapshot_root),
         })
     }
 
     pub fn refresh(&self, force_pricing_refresh: bool) -> Result<AppSnapshot> {
         let today = Local::now().date_naive();
         let dashboard_settings = self.settings_store.load_dashboard_settings()?;
-        let current_provider_id = dashboard_settings.current_provider.as_str();
-        let provider = self
-            .providers
-            .iter()
-            .filter(|provider| {
-                dashboard_settings
-                    .enabled_providers
-                    .iter()
-                    .any(|enabled| enabled == provider.id())
-            })
-            .find(|provider| provider.id() == current_provider_id)
-            .or_else(|| {
-                self.providers.iter().find(|provider| {
-                    dashboard_settings
-                        .enabled_providers
-                        .iter()
-                        .any(|enabled| enabled == provider.id())
-                })
-            })
-            .context("no usage providers configured")?;
-        let quota_settings = self.load_quota_settings(provider.id())?;
-        let usage = match provider.collect_daily_usage(today) {
-            Ok(usage) => usage,
-            Err(error) => {
-                return Ok(build_error_snapshot_with_quota_for_provider(
-                    format!("{error:#}"),
-                    provider.id(),
-                    dashboard_settings.enabled_providers.clone(),
-                    &quota_settings,
-                    dashboard_settings.always_on_top,
-                ))
-            }
-        };
-        let pricing = self.pricing_store.load(force_pricing_refresh)?;
-
-        Ok(build_app_snapshot(
-            usage,
-            &dashboard_settings.enabled_providers,
-            &quota_settings,
-            dashboard_settings.always_on_top,
-            &pricing.cache,
-            pricing.used_stale_cache,
-            Local::now(),
-        ))
+        self.snapshot_for_date_with_settings(
+            &dashboard_settings,
+            dashboard_settings.current_provider.as_str(),
+            today,
+            force_pricing_refresh,
+        )
     }
 
     pub fn load_quota_settings(&self, provider_id: &str) -> Result<QuotaSettings> {
@@ -148,12 +116,231 @@ impl UsageAppService {
         self.settings_store.load_dashboard_settings()
     }
 
+    pub fn snapshot_for_date(&self, provider_id: &str, date: NaiveDate) -> Result<AppSnapshot> {
+        let dashboard_settings = self.settings_store.load_dashboard_settings()?;
+        self.snapshot_for_date_with_settings(&dashboard_settings, provider_id, date, false)
+    }
+
+    pub fn load_usage_heatmap(&self, provider_id: &str, weeks: usize) -> Result<UsageHeatmap> {
+        let dashboard_settings = self.settings_store.load_dashboard_settings()?;
+        let provider = self.resolve_provider(&dashboard_settings, provider_id)?;
+        let today = Local::now().date_naive();
+        let pricing = self.pricing_store.load(false)?;
+        let total_days = weeks.max(1) * 7;
+        let start = today
+            .checked_sub_days(Days::new((total_days.saturating_sub(1)) as u64))
+            .unwrap_or(today);
+        let history_end = today.pred_opt().unwrap_or(today);
+        let history_snapshots = if start <= history_end {
+            self.snapshot_store
+                .load_range(provider.id(), start, history_end)?
+        } else {
+            BTreeMap::new()
+        };
+
+        let today_usage = provider.collect_daily_usage(today)?;
+        let today_total_cost = total_cost_for_daily_usage(&today_usage, &pricing.cache);
+        let mut days = Vec::with_capacity(total_days);
+        let mut cursor = start;
+
+        while cursor <= today {
+            let total_cost_usd = if cursor == today {
+                today_total_cost
+            } else {
+                history_snapshots
+                    .get(&cursor)
+                    .map(|snapshot| snapshot.total_cost_usd)
+                    .unwrap_or(0.0)
+            };
+            days.push(HeatmapDay {
+                date: cursor.to_string(),
+                total_cost_usd,
+            });
+            let Some(next) = cursor.succ_opt() else {
+                break;
+            };
+            cursor = next;
+        }
+
+        Ok(UsageHeatmap {
+            provider_id: provider.id().to_string(),
+            today: today.to_string(),
+            days,
+        })
+    }
+
+    pub fn warm_usage_history(&self, provider_id: &str, weeks: usize) -> Result<()> {
+        let dashboard_settings = self.settings_store.load_dashboard_settings()?;
+        let provider = self.resolve_provider(&dashboard_settings, provider_id)?;
+        let today = Local::now().date_naive();
+        let history_end = match today.pred_opt() {
+            Some(value) => value,
+            None => return Ok(()),
+        };
+        let total_days = weeks.max(1) * 7;
+        let start = today
+            .checked_sub_days(Days::new((total_days.saturating_sub(1)) as u64))
+            .unwrap_or(today);
+        if start > history_end {
+            return Ok(());
+        }
+
+        let existing = self
+            .snapshot_store
+            .load_range(provider.id(), start, history_end)?;
+        let mut missing_dates = BTreeSet::new();
+        let mut cursor = start;
+        while cursor <= history_end {
+            if !existing.contains_key(&cursor) {
+                missing_dates.insert(cursor);
+            }
+            let Some(next) = cursor.succ_opt() else {
+                break;
+            };
+            cursor = next;
+        }
+
+        if missing_dates.is_empty() {
+            return Ok(());
+        }
+
+        let pricing = self.pricing_store.load(false)?;
+        let quota_settings = self.load_quota_settings(provider.id())?;
+        for usage in provider.collect_daily_usage_series(start, history_end)? {
+            let Some(date) = NaiveDate::parse_from_str(&usage.date, "%Y-%m-%d").ok() else {
+                continue;
+            };
+            if !missing_dates.contains(&date) {
+                continue;
+            }
+            let snapshot = build_app_snapshot(
+                usage,
+                &dashboard_settings.enabled_providers,
+                &quota_settings,
+                dashboard_settings.always_on_top,
+                &pricing.cache,
+                pricing.used_stale_cache,
+                Local::now(),
+            );
+            self.snapshot_store.save(&snapshot)?;
+        }
+
+        Ok(())
+    }
+
     pub fn save_dashboard_settings(
         &self,
         settings: &DashboardSettings,
     ) -> Result<DashboardSettings> {
         self.settings_store.save_dashboard_settings(settings)
     }
+
+    fn snapshot_for_date_with_settings(
+        &self,
+        dashboard_settings: &DashboardSettings,
+        provider_id: &str,
+        date: NaiveDate,
+        force_pricing_refresh: bool,
+    ) -> Result<AppSnapshot> {
+        let provider = self.resolve_provider(dashboard_settings, provider_id)?;
+        let quota_settings = self.load_quota_settings(provider.id())?;
+        let today = Local::now().date_naive();
+
+        if date < today {
+            if let Some(snapshot) = self.snapshot_store.load(provider.id(), date)? {
+                return Ok(apply_runtime_snapshot_state(
+                    snapshot,
+                    &dashboard_settings.enabled_providers,
+                    &quota_settings,
+                    dashboard_settings.always_on_top,
+                ));
+            }
+        }
+
+        let usage = match provider.collect_daily_usage(date) {
+            Ok(usage) => usage,
+            Err(error) => {
+                return Ok(build_error_snapshot_with_quota_for_provider(
+                    format!("{error:#}"),
+                    provider.id(),
+                    dashboard_settings.enabled_providers.clone(),
+                    &quota_settings,
+                    dashboard_settings.always_on_top,
+                ))
+            }
+        };
+        let pricing = self.pricing_store.load(force_pricing_refresh)?;
+
+        let snapshot = build_app_snapshot(
+            usage,
+            &dashboard_settings.enabled_providers,
+            &quota_settings,
+            dashboard_settings.always_on_top,
+            &pricing.cache,
+            pricing.used_stale_cache,
+            Local::now(),
+        );
+
+        if date < today && snapshot.error_message.is_none() {
+            let _ = self.snapshot_store.save(&snapshot);
+        }
+
+        Ok(snapshot)
+    }
+
+    fn resolve_provider(
+        &self,
+        dashboard_settings: &DashboardSettings,
+        provider_id: &str,
+    ) -> Result<&Arc<dyn UsageProvider>> {
+        self.providers
+            .iter()
+            .filter(|provider| {
+                dashboard_settings
+                    .enabled_providers
+                    .iter()
+                    .any(|enabled| enabled == provider.id())
+            })
+            .find(|provider| provider.id() == provider_id)
+            .or_else(|| {
+                self.providers.iter().find(|provider| {
+                    dashboard_settings
+                        .enabled_providers
+                        .iter()
+                        .any(|enabled| enabled == provider.id())
+                })
+            })
+            .context("no usage providers configured")
+    }
+}
+
+fn total_cost_for_daily_usage(usage: &DailyUsage, pricing: &PricingCache) -> f64 {
+    usage
+        .model_breakdown
+        .iter()
+        .filter_map(|model_usage| {
+            let price_quote = find_price_quote(pricing, &model_usage.model_name)?;
+            Some(total_cost_for_usage(&model_usage.usage, &price_quote))
+        })
+        .sum()
+}
+
+fn apply_runtime_snapshot_state(
+    mut snapshot: AppSnapshot,
+    enabled_provider_ids: &[String],
+    quota_settings: &QuotaSettings,
+    dashboard_always_on_top: bool,
+) -> AppSnapshot {
+    snapshot.enabled_provider_ids = enabled_provider_ids.to_vec();
+    snapshot.dashboard_always_on_top = dashboard_always_on_top;
+    snapshot.title = format!("${:.2}", snapshot.total_cost_usd);
+    snapshot.tooltip = build_snapshot_tooltip(
+        &snapshot.provider_id,
+        snapshot.total_cost_usd,
+        &snapshot.totals,
+    );
+    snapshot.quota = build_quota_snapshot(quota_settings, snapshot.total_cost_usd, false);
+    snapshot
 }
 
 fn build_app_snapshot(
@@ -208,13 +395,7 @@ fn build_app_snapshot(
     }
 
     let title = format!("${total_cost_usd:.2}");
-    let provider_label = provider_display_name(&provider_id);
-    let tooltip = format!(
-        "{provider_label} today: ${total_cost_usd:.2}\n↑ {}   ⚡ {}   ↓ {}",
-        format_token_count(billable_input_tokens(&totals)),
-        format_token_count(totals.cached_input_tokens),
-        format_token_count(total_output_tokens(&totals))
-    );
+    let tooltip = build_snapshot_tooltip(&provider_id, total_cost_usd, &totals);
     let warning = build_snapshot_warning(
         &provider_id,
         &model_costs,
@@ -240,6 +421,16 @@ fn build_app_snapshot(
         warning,
         error_message: None,
     }
+}
+
+fn build_snapshot_tooltip(provider_id: &str, total_cost_usd: f64, totals: &TokenUsage) -> String {
+    let provider_label = provider_display_name(provider_id);
+    format!(
+        "{provider_label} today: ${total_cost_usd:.2}\n↑ {}   ⚡ {}   ↓ {}",
+        format_token_count(billable_input_tokens(totals)),
+        format_token_count(totals.cached_input_tokens),
+        format_token_count(total_output_tokens(totals))
+    )
 }
 
 fn build_snapshot_warning(

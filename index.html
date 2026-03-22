@@ -11,6 +11,7 @@
   <body>
     <main class="shell">
       <div class="top-actions">
+        <button class="icon-button" id="heatmap-button" type="button" aria-label="Toggle date heatmap"></button>
         <button class="icon-button" id="settings-button" type="button" aria-label="Open settings"></button>
         <button class="icon-button" id="pin-button" type="button" aria-label="Enable always on top"></button>
         <button class="icon-button" id="share-button" type="button" aria-label="Copy dashboard screenshot">
@@ -22,17 +23,24 @@
       <div id="capture-target">
         <section class="hero">
           <div class="hero-head">
-            <div class="hero-main">
+            <div class="hero-main" id="hero-main">
               <div class="hero-toolbar">
                 <div class="provider-switcher" id="provider-switcher" role="tablist" aria-label="Usage provider"></div>
               </div>
-              <p class="eyebrow">Today</p>
-              <div class="summary-row">
-                <h1 id="summary">$0.00</h1>
-                <div class="summary-trend" id="summary-trend"></div>
-                <div class="summary-amount-spacer" aria-hidden="true"></div>
+              <div class="hero-content">
+                <div class="hero-summary-column">
+                  <div class="summary-trigger" id="summary-trigger">
+                    <p class="eyebrow" id="summary-label">Today</p>
+                    <div class="summary-row">
+                      <h1 id="summary">$0.00</h1>
+                      <div class="summary-trend" id="summary-trend"></div>
+                      <div class="summary-amount-spacer" aria-hidden="true"></div>
+                    </div>
+                  </div>
+                  <div class="quota-row" id="quota-row" hidden></div>
+                </div>
+                <section class="heatmap-panel" id="heatmap-panel" hidden></section>
               </div>
-              <div class="quota-row" id="quota-row" hidden></div>
             </div>
           </div>
         </section>

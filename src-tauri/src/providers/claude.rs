@@ -141,6 +141,40 @@ impl UsageProvider for ClaudeUsageProvider {
             skipped_log_files,
         })
     }
+
+    fn collect_daily_usage_series(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<DailyUsage>> {
+        if !self.root.exists() || start > end {
+            return Ok(Vec::new());
+        }
+
+        let mut per_day_model = BTreeMap::<NaiveDate, BTreeMap<String, TokenUsage>>::new();
+
+        for path in self.session_files() {
+            let contents = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+
+            let parsed = parse_project_jsonl_range(&path, &contents, start, end)?;
+            for snapshot in parsed.snapshots {
+                let date = local_date_from_rfc3339(&snapshot.timestamp)
+                    .context("invalid usage timestamp")?;
+                per_day_model
+                    .entry(date)
+                    .or_default()
+                    .entry(snapshot.model_name)
+                    .or_default()
+                    .add_assign(&snapshot.usage);
+            }
+        }
+
+        Ok(per_day_model
+            .into_iter()
+            .map(|(date, per_model)| build_daily_usage_without_timeline(self.id(), date, per_model))
+            .collect())
+    }
 }
 
 fn parse_project_jsonl(
@@ -148,6 +182,26 @@ fn parse_project_jsonl(
     contents: &str,
     target_date: NaiveDate,
 ) -> Result<ParsedProjectJsonl> {
+    parse_project_jsonl_with_filter(path, contents, |date| date == target_date)
+}
+
+fn parse_project_jsonl_range(
+    path: &Path,
+    contents: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<ParsedProjectJsonl> {
+    parse_project_jsonl_with_filter(path, contents, |date| date >= start && date <= end)
+}
+
+fn parse_project_jsonl_with_filter<F>(
+    path: &Path,
+    contents: &str,
+    include_date: F,
+) -> Result<ParsedProjectJsonl>
+where
+    F: Fn(NaiveDate) -> bool,
+{
     let mut snapshots = BTreeMap::<String, UsageSnapshot>::new();
     let mut skipped_line_count = 0u64;
 
@@ -168,9 +222,15 @@ fn parse_project_jsonl(
         }
 
         let timestamp = match value.get("timestamp").and_then(Value::as_str) {
-            Some(timestamp) if timestamp_matches_local_date(timestamp, target_date) => timestamp,
+            Some(timestamp) => timestamp,
             _ => continue,
         };
+        let Some(local_date) = local_date_from_rfc3339(timestamp) else {
+            continue;
+        };
+        if !include_date(local_date) {
+            continue;
+        }
 
         let message = match value.get("message") {
             Some(message) => message,
@@ -283,10 +343,10 @@ fn parse_project_jsonl(
     })
 }
 
-fn timestamp_matches_local_date(timestamp: &str, date: NaiveDate) -> bool {
+fn local_date_from_rfc3339(timestamp: &str) -> Option<NaiveDate> {
     DateTime::parse_from_rfc3339(timestamp)
-        .map(|value| value.with_timezone(&Local).date_naive() == date)
-        .unwrap_or(false)
+        .ok()
+        .map(|value| value.with_timezone(&Local).date_naive())
 }
 
 fn half_hour_bucket_index(timestamp: &str) -> Option<usize> {
@@ -294,6 +354,43 @@ fn half_hour_bucket_index(timestamp: &str) -> Option<usize> {
         .ok()?
         .with_timezone(&Local);
     Some((local.hour() as usize) * 2 + usize::from(local.minute() >= 30))
+}
+
+fn build_daily_usage_without_timeline(
+    provider_id: &str,
+    date: NaiveDate,
+    per_model: BTreeMap<String, TokenUsage>,
+) -> DailyUsage {
+    let mut totals = TokenUsage::default();
+    let mut model_breakdown: Vec<_> = per_model
+        .into_iter()
+        .map(|(model_name, usage)| {
+            totals.add_assign(&usage);
+            ModelUsage {
+                model_name,
+                usage,
+                usage_timeline: vec![TokenUsage::default(); 48],
+            }
+        })
+        .collect();
+    model_breakdown.sort_by(|left, right| {
+        Reverse(left.usage.total_tokens())
+            .cmp(&Reverse(right.usage.total_tokens()))
+            .then_with(|| {
+                Reverse(left.usage.output_tokens).cmp(&Reverse(right.usage.output_tokens))
+            })
+            .then_with(|| Reverse(left.usage.input_tokens).cmp(&Reverse(right.usage.input_tokens)))
+            .then_with(|| left.model_name.cmp(&right.model_name))
+    });
+
+    DailyUsage {
+        provider_id: provider_id.to_string(),
+        date: date.to_string(),
+        model_breakdown,
+        totals,
+        skipped_log_lines: 0,
+        skipped_log_files: 0,
+    }
 }
 
 #[cfg(test)]
