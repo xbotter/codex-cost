@@ -8,9 +8,9 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
-  <body>
-    <main class="shell">
-      <div class="top-actions">
+  <body data-view="dashboard">
+    <main class="shell" data-view="dashboard">
+      <div class="top-actions" id="top-actions">
         <button class="icon-button" id="heatmap-button" type="button" aria-label="Toggle date heatmap"></button>
         <button class="icon-button" id="settings-button" type="button" aria-label="Open settings"></button>
         <button class="icon-button" id="pin-button" type="button" aria-label="Enable always on top"></button>
@@ -20,38 +20,70 @@
 
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-      <div id="capture-target">
-        <section class="hero">
-          <div class="hero-head">
-            <div class="hero-main" id="hero-main">
-              <div class="hero-toolbar">
-                <div class="provider-switcher" id="provider-switcher" role="tablist" aria-label="Usage provider"></div>
-              </div>
-              <div class="hero-content">
-                <div class="hero-summary-column">
-                  <div class="summary-trigger" id="summary-trigger">
-                    <p class="eyebrow" id="summary-label">Today</p>
-                    <div class="summary-row">
-                      <h1 id="summary">$0.00</h1>
-                      <div class="summary-trend" id="summary-trend"></div>
-                      <div class="summary-amount-spacer" aria-hidden="true"></div>
-                    </div>
-                  </div>
-                  <div class="quota-row" id="quota-row" hidden></div>
+      <section class="app-view dashboard-view" id="dashboard-view" data-view="dashboard" data-view-active="true">
+        <div id="capture-target">
+          <section class="hero">
+            <div class="hero-head">
+              <div class="hero-main" id="hero-main">
+                <div class="hero-toolbar">
+                  <div class="provider-switcher" id="provider-switcher" role="tablist" aria-label="Usage provider"></div>
                 </div>
-                <section class="heatmap-panel" id="heatmap-panel" hidden></section>
+                <div class="hero-content">
+                  <div class="hero-summary-column">
+                    <div class="summary-trigger" id="summary-trigger">
+                      <p class="eyebrow" id="summary-label">Today</p>
+                      <div class="summary-row">
+                        <h1 id="summary">$0.00</h1>
+                        <div class="summary-trend" id="summary-trend"></div>
+                        <div class="summary-amount-spacer" aria-hidden="true"></div>
+                      </div>
+                    </div>
+                    <div class="quota-row" id="quota-row" hidden></div>
+                  </div>
+                  <section class="heatmap-panel" id="heatmap-panel" hidden></section>
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
 
-        <section class="metrics" id="totals"></section>
+          <section class="metrics" id="totals"></section>
 
-        <section class="panel">
-          <span class="panel-label">Model Breakdown</span>
-          <div class="model-list" id="models"></div>
-        </section>
-      </div>
+          <section class="panel">
+            <span class="panel-label">Model Breakdown</span>
+            <div class="model-list" id="models"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="app-view settings-view" id="settings-view" data-view="settings" hidden>
+        <div class="settings-shell">
+          <header class="settings-topbar">
+            <button class="settings-back-button" id="settings-back-button" type="button" aria-label="Back to dashboard">
+              <span>Back</span>
+            </button>
+            <div class="settings-title-block">
+              <h1>Provider settings</h1>
+            </div>
+          </header>
+
+          <form class="settings-form" id="settings-form">
+            <aside class="settings-sidebar" aria-label="Provider list">
+              <div class="pane-header">
+                <h2>Providers</h2>
+              </div>
+              <div class="provider-list" id="provider-list"></div>
+            </aside>
+
+            <section class="settings-detail-pane">
+              <div class="provider-detail" id="provider-detail"></div>
+              <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
+              <div class="actions">
+                <button class="save-button" id="save-button" type="submit">Save changes</button>
+              </div>
+            </section>
+          </form>
+        </div>
+      </section>
     </main>
   </body>
 </html>

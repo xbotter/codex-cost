@@ -17,10 +17,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "check:contracts": "node --test tests/view-contract.test.mjs tests/provider-switch-contract.test.mjs tests/quota-layout-contract.test.mjs",
     "check:frontend": "tsc && vite build",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
     "fmt:rust": "cargo fmt --all --manifest-path src-tauri/Cargo.toml --check",
-    "check": "npm run check:frontend && npm run fmt:rust && npm run check:rust",
+    "check": "npm run check:contracts && npm run check:frontend && npm run fmt:rust && npm run check:rust",
     "preview": "vite preview",
     "tauri": "tauri"
   },

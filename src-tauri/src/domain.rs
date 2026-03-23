@@ -215,6 +215,8 @@ pub struct AppSnapshot {
 mod tests {
     use std::path::Path;
 
+    use chrono::{Local, TimeZone};
+
     use super::{
         DashboardSettings, QuotaMode, QuotaSettings, QuotaSnapshot, TokenUsage, UsageSnapshot,
     };
@@ -285,14 +287,31 @@ mod tests {
 
     #[test]
     fn parse_session_jsonl_aggregates_token_count_deltas_for_today() {
-        let jsonl = r#"{"timestamp":"2026-03-17T02:05:57.058Z","type":"session_meta","payload":{"id":"abc","model_provider":"openai"}}
-{"timestamp":"2026-03-17T02:07:26.915Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}
-{"timestamp":"2026-03-17T02:10:26.915Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":9,"reasoning_output_tokens":2,"total_tokens":159}}}}
-{"timestamp":"2026-03-16T23:59:59.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":999,"cached_input_tokens":999,"output_tokens":999,"reasoning_output_tokens":999,"total_tokens":999}}}}"#;
+        let first_timestamp = Local
+            .with_ymd_and_hms(2026, 3, 17, 10, 7, 26)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let second_timestamp = Local
+            .with_ymd_and_hms(2026, 3, 17, 10, 10, 26)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let previous_day_timestamp = Local
+            .with_ymd_and_hms(2026, 3, 16, 23, 59, 59)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let jsonl = format!(
+            r#"{{"timestamp":"2026-03-17T02:05:57.058Z","type":"session_meta","payload":{{"id":"abc","model_provider":"openai"}}}}
+{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}}}}}
+{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":150,"cached_input_tokens":30,"output_tokens":9,"reasoning_output_tokens":2,"total_tokens":159}}}}}}}}
+{{"timestamp":"{previous_day_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":999,"cached_input_tokens":999,"output_tokens":999,"reasoning_output_tokens":999,"total_tokens":999}}}}}}}}"#
+        );
 
         let snapshots = parse_session_jsonl(
             Path::new("C:/Users/test/.codex/sessions/2026/03/17/test.jsonl"),
-            jsonl,
+            &jsonl,
             chrono::NaiveDate::from_ymd_opt(2026, 3, 17).unwrap(),
         )
         .expect("session should parse");
@@ -303,7 +322,7 @@ mod tests {
                 UsageSnapshot {
                     provider_id: "codex".to_string(),
                     model_name: "gpt-5".to_string(),
-                    timestamp: "2026-03-17T02:07:26.915Z".to_string(),
+                    timestamp: first_timestamp,
                     usage: TokenUsage {
                         input_tokens: 100,
                         cached_input_tokens: 20,
@@ -315,7 +334,7 @@ mod tests {
                 UsageSnapshot {
                     provider_id: "codex".to_string(),
                     model_name: "gpt-5".to_string(),
-                    timestamp: "2026-03-17T02:10:26.915Z".to_string(),
+                    timestamp: second_timestamp,
                     usage: TokenUsage {
                         input_tokens: 50,
                         cached_input_tokens: 10,
@@ -367,13 +386,25 @@ mod tests {
 
     #[test]
     fn parse_session_jsonl_uses_previous_day_totals_as_baseline_for_first_event_of_day() {
-        let jsonl = r#"{"timestamp":"2026-03-16T23:50:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
-{"timestamp":"2026-03-16T23:55:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}
-{"timestamp":"2026-03-17T00:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":9,"reasoning_output_tokens":2,"total_tokens":159}}}}"#;
+        let previous_day_timestamp = Local
+            .with_ymd_and_hms(2026, 3, 16, 23, 55, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let target_day_timestamp = Local
+            .with_ymd_and_hms(2026, 3, 17, 0, 10, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let jsonl = format!(
+            r#"{{"timestamp":"2026-03-16T23:50:00.000Z","type":"turn_context","payload":{{"model":"gpt-5.4"}}}}
+{{"timestamp":"{previous_day_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}}}}}
+{{"timestamp":"{target_day_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":150,"cached_input_tokens":30,"output_tokens":9,"reasoning_output_tokens":2,"total_tokens":159}}}}}}}}"#
+        );
 
         let snapshots = parse_session_jsonl(
             Path::new("C:/Users/test/.codex/sessions/2026/03/16/test.jsonl"),
-            jsonl,
+            &jsonl,
             chrono::NaiveDate::from_ymd_opt(2026, 3, 17).unwrap(),
         )
         .expect("session should parse");

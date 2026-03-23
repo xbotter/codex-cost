@@ -10,7 +10,9 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::domain::{DailyUsage, ModelUsage, ProviderSettingsSummary, TokenUsage, UsageSnapshot};
-use crate::providers::UsageProvider;
+use crate::providers::{
+    load_file_signature, should_scan_file_for_date, FileParseCache, UsageProvider,
+};
 
 const DEFAULT_FALLBACK_MODEL: &str = "kimi-for-coding";
 
@@ -29,11 +31,16 @@ struct KimiModelConfig {
 pub struct KimiUsageProvider {
     root: PathBuf,
     config_path: PathBuf,
+    parse_cache: FileParseCache<ParsedWireJsonl>,
 }
 
 impl KimiUsageProvider {
     pub fn new(root: PathBuf, config_path: PathBuf) -> Self {
-        Self { root, config_path }
+        Self {
+            root,
+            config_path,
+            parse_cache: FileParseCache::default(),
+        }
     }
 
     pub fn default_root() -> Result<PathBuf> {
@@ -125,12 +132,26 @@ impl UsageProvider for KimiUsageProvider {
         let mut skipped_log_lines = 0u64;
         let mut skipped_log_files = 0u64;
         let default_model_name = self.default_model_name();
+        let today = Local::now().date_naive();
+        let scope_key = format!("{}:{default_model_name}", date.format("%Y-%m-%d"));
 
         for path in self.session_files() {
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let signature = load_file_signature(&path);
+            if !should_scan_file_for_date(
+                signature.as_ref().map(|value| value.modified_at),
+                date,
+                today,
+            ) {
+                continue;
+            }
 
-            let parsed = parse_wire_jsonl(&contents, date, &default_model_name)?;
+            let parsed = self
+                .parse_cache
+                .get_or_try_parse(&path, &scope_key, signature, || {
+                    let contents = fs::read_to_string(&path)
+                        .with_context(|| format!("failed to read {}", path.display()))?;
+                    parse_wire_jsonl(&contents, date, &default_model_name)
+                })?;
             skipped_log_lines += parsed.skipped_line_count;
             if parsed.skipped_line_count > 0 {
                 skipped_log_files += 1;
@@ -222,6 +243,7 @@ impl UsageProvider for KimiUsageProvider {
     }
 }
 
+#[derive(Clone)]
 struct ParsedWireJsonl {
     snapshots: Vec<UsageSnapshot>,
     skipped_line_count: u64,

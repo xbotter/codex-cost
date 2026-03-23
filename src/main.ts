@@ -5,12 +5,14 @@ import "@fontsource/nunito/latin-800.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toPng } from "html-to-image";
+import arrowLeftIcon from "lucide-static/icons/arrow-left.svg?raw";
 import pinIcon from "lucide-static/icons/pin.svg?raw";
 import pinOffIcon from "lucide-static/icons/pin-off.svg?raw";
 import settingsIcon from "lucide-static/icons/settings-2.svg?raw";
 import shareIcon from "lucide-static/icons/share.svg?raw";
 import calendarIcon from "lucide-static/icons/calendar-range.svg?raw";
 import loaderIcon from "lucide-static/icons/loader-circle.svg?raw";
+import { initializeSettingsView, loadSettingsView } from "./settings";
 
 type TokenUsage = {
   input_tokens: number;
@@ -77,6 +79,18 @@ type AppSnapshot = {
   error_message: string | null;
 };
 
+type WindowView = "dashboard" | "settings";
+
+type NavigateEvent = {
+  view: WindowView;
+  reloadSettings?: boolean;
+};
+
+let shellEl: HTMLElement | null;
+let topActionsEl: HTMLElement | null;
+let dashboardViewEl: HTMLElement | null;
+let settingsViewEl: HTMLElement | null;
+let settingsBackButtonEl: HTMLButtonElement | null;
 let summaryEl: HTMLElement | null;
 let summaryLabelEl: HTMLElement | null;
 let summaryTrendEl: HTMLElement | null;
@@ -101,6 +115,7 @@ let heatmapData: UsageHeatmap | null = null;
 let heatmapVisible = false;
 let heatmapLoading = false;
 let heatmapWarmupRequestedForProvider: string | null = null;
+let currentView: WindowView = "dashboard";
 
 const PROVIDERS = [
   { id: "codex", label: "Codex" },
@@ -253,6 +268,10 @@ function screenshotIconMarkup() {
 
 function settingsIconMarkup() {
   return normalizeLucide(settingsIcon);
+}
+
+function backIconMarkup() {
+  return normalizeLucide(arrowLeftIcon);
 }
 
 function heatmapIconMarkup() {
@@ -661,7 +680,51 @@ function render(snapshot: AppSnapshot) {
   renderHeatmap();
 }
 
+async function setView(view: WindowView, options: { reloadSettings?: boolean } = {}) {
+  currentView = view;
+  document.body.dataset.view = view;
+  shellEl?.setAttribute("data-view", view);
+
+  if (dashboardViewEl) {
+    dashboardViewEl.hidden = view !== "dashboard";
+  }
+
+  if (settingsViewEl) {
+    settingsViewEl.hidden = view !== "settings";
+  }
+
+  if (settingsButtonEl) {
+    settingsButtonEl.classList.toggle("is-active", view === "settings");
+    settingsButtonEl.setAttribute(
+      "aria-label",
+      view === "settings" ? "Settings view is open" : "Open settings",
+    );
+  }
+
+  if (topActionsEl) {
+    topActionsEl.hidden = view === "settings";
+  }
+
+  if (view === "settings") {
+    heatmapVisible = false;
+    renderHeatmap();
+    if (options.reloadSettings) {
+      await loadSettingsView();
+    }
+    return;
+  }
+
+  if (liveSnapshot) {
+    render(liveSnapshot);
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
+  shellEl = document.querySelector(".shell");
+  topActionsEl = document.querySelector("#top-actions");
+  dashboardViewEl = document.querySelector("#dashboard-view");
+  settingsViewEl = document.querySelector("#settings-view");
+  settingsBackButtonEl = document.querySelector("#settings-back-button");
   summaryEl = document.querySelector("#summary");
   summaryLabelEl = document.querySelector("#summary-label");
   summaryTrendEl = document.querySelector("#summary-trend");
@@ -682,6 +745,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     settingsButtonEl.innerHTML = settingsIconMarkup();
   }
 
+  if (settingsBackButtonEl) {
+    settingsBackButtonEl.innerHTML = `${backIconMarkup()}<span>Back</span>`;
+  }
+
   if (shareButtonEl) {
     shareButtonEl.innerHTML = screenshotIconMarkup();
   }
@@ -690,16 +757,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     heatmapButtonEl.innerHTML = heatmapIconMarkup();
   }
 
+  initializeSettingsView();
+
   settingsButtonEl?.addEventListener("click", async () => {
-    settingsButtonEl!.disabled = true;
-    try {
-      await invoke("open_settings_window");
-    } catch (error) {
-      console.error(error);
-      showToast("Open settings failed", "error");
-    } finally {
-      settingsButtonEl!.disabled = false;
-    }
+    await loadSettingsView();
+    await setView("settings", { reloadSettings: false });
+  });
+
+  settingsBackButtonEl?.addEventListener("click", () => {
+    void setView("dashboard");
   });
 
   pinButtonEl?.addEventListener("click", async () => {
@@ -753,7 +819,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
 
     providerSwitchInFlight = true;
-    render(await invoke<AppSnapshot>("get_snapshot"));
+    if (liveSnapshot) {
+      render(liveSnapshot);
+    }
 
     try {
       const snapshot = await invoke<AppSnapshot>("set_current_provider", { providerId });
@@ -770,11 +838,9 @@ window.addEventListener("DOMContentLoaded", async () => {
       showToast("Switch failed", "error");
     } finally {
       providerSwitchInFlight = false;
-      const latest = await invoke<AppSnapshot>("get_snapshot");
-      liveSnapshot = latest;
-      if (renderedSnapshot?.date === latest.date && renderedSnapshot.provider_id === latest.provider_id) {
-        render(latest);
-      } else {
+      if (liveSnapshot && renderedSnapshot?.date === liveSnapshot.date && renderedSnapshot.provider_id === liveSnapshot.provider_id) {
+        render(liveSnapshot);
+      } else if (currentView === "dashboard") {
         renderHeatmap();
       }
     }
@@ -785,18 +851,37 @@ window.addEventListener("DOMContentLoaded", async () => {
   heatmapData = null;
   heatmapWarmupRequestedForProvider = null;
   render(snapshot);
+  await setView("dashboard");
 
   await listen<AppSnapshot>("snapshot-updated", (event) => {
     liveSnapshot = event.payload;
     if (
+      currentView === "dashboard"
+      && (
       !renderedSnapshot
       || (renderedSnapshot.provider_id === event.payload.provider_id
         && renderedSnapshot.date === event.payload.date)
+      )
     ) {
       render(event.payload);
-    } else if (heatmapVisible && heatmapData?.provider_id === event.payload.provider_id) {
+    } else if (
+      currentView === "dashboard"
+      && heatmapVisible
+      && heatmapData?.provider_id === event.payload.provider_id
+    ) {
       void loadHeatmap(true);
     }
+  });
+
+  await listen<NavigateEvent>("navigate", (event) => {
+    void (async () => {
+      if (event.payload.view === "settings" && event.payload.reloadSettings) {
+        await loadSettingsView();
+      }
+      await setView(event.payload.view, {
+        reloadSettings: false,
+      });
+    })();
   });
 
   await listen<{ providerId: string }>("usage-history-warmed", (event) => {

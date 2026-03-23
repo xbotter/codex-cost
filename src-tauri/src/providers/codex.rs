@@ -9,17 +9,23 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::domain::{DailyUsage, ModelUsage, ProviderSettingsSummary, TokenUsage, UsageSnapshot};
-use crate::providers::UsageProvider;
+use crate::providers::{
+    load_file_signature, should_scan_file_for_date, FileParseCache, UsageProvider,
+};
 
 const DEFAULT_FALLBACK_MODEL: &str = "gpt-5";
 
 pub struct CodexUsageProvider {
     root: PathBuf,
+    parse_cache: FileParseCache<Vec<UsageSnapshot>>,
 }
 
 impl CodexUsageProvider {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            parse_cache: FileParseCache::default(),
+        }
     }
 
     pub fn default_root() -> Result<PathBuf> {
@@ -74,12 +80,28 @@ impl UsageProvider for CodexUsageProvider {
 
         let mut per_model = BTreeMap::<String, TokenUsage>::new();
         let mut per_model_timeline = BTreeMap::<String, Vec<TokenUsage>>::new();
+        let today = Local::now().date_naive();
+        let scope_key = date.format("%Y-%m-%d").to_string();
 
         for path in self.session_files() {
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let signature = load_file_signature(&path);
+            if !should_scan_file_for_date(
+                signature.as_ref().map(|value| value.modified_at),
+                date,
+                today,
+            ) {
+                continue;
+            }
 
-            for snapshot in parse_session_jsonl(&path, &contents, date)? {
+            let snapshots =
+                self.parse_cache
+                    .get_or_try_parse(&path, &scope_key, signature, || {
+                        let contents = fs::read_to_string(&path)
+                            .with_context(|| format!("failed to read {}", path.display()))?;
+                        parse_session_jsonl(&path, &contents, date)
+                    })?;
+
+            for snapshot in snapshots {
                 let bucket = half_hour_bucket_index(&snapshot.timestamp).unwrap_or(0);
                 per_model
                     .entry(snapshot.model_name.clone())
