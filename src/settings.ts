@@ -1,6 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type ProviderId = "codex" | "claude" | "kimi";
 type QuotaMode = "target" | "cap";
@@ -40,6 +38,7 @@ let currentDashboardSettings: DashboardSettings | null = null;
 let currentQuotaSettings: ProviderQuotaSettings | null = null;
 let providerSummaries: ProviderSettingsSummary[] = [];
 let selectedProviderId: ProviderId = "codex";
+let initialized = false;
 
 function defaultQuotaSettings(): QuotaSettings {
   return {
@@ -163,7 +162,6 @@ function renderProviderDetail() {
         <h2>${escapeHtml(summary?.display_name ?? selectedProviderId)}</h2>
         <div class="detail-meta">
           <span class="${statusChipClass}">${escapeHtml(statusLabel)}</span>
-          <span class="detail-meta-text">${isEnabled ? "Enabled" : "Disabled"}</span>
         </div>
       </div>
       <label class="detail-toggle">
@@ -357,7 +355,11 @@ async function saveSettings(event: SubmitEvent) {
   }
 }
 
-window.addEventListener("DOMContentLoaded", async () => {
+export function initializeSettingsView() {
+  if (initialized) {
+    return;
+  }
+
   formEl = document.querySelector("#settings-form");
   providerListEl = document.querySelector("#provider-list");
   providerDetailEl = document.querySelector("#provider-detail");
@@ -365,18 +367,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   saveButtonEl = document.querySelector("#save-button");
 
   formEl?.addEventListener("submit", (event) => void saveSettings(event));
+  initialized = true;
+}
+
+export async function loadSettingsView() {
+  if (!initialized) {
+    initializeSettingsView();
+  }
 
   await loadSettings();
-
-  await listen("settings-window-opened", async () => {
-    await loadSettings();
-  });
-
-  const currentWindow = getCurrentWindow();
-  currentWindow.onCloseRequested(async (event) => {
-    event.preventDefault();
-    setStatus("");
-    await loadSettings();
-    await currentWindow.hide();
-  });
-});
+}

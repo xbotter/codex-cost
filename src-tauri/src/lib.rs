@@ -26,7 +26,7 @@ use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::WindowEvent;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
 
 const TRAY_ID: &str = "usage-tray";
 const MENU_STATUS: &str = "status";
@@ -44,6 +44,21 @@ struct AppState {
     tokens_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
     updated_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
     warming_history_providers: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WindowView {
+    Dashboard,
+    Settings,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NavigateEvent {
+    view: WindowView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reload_settings: Option<bool>,
 }
 
 impl AppState {
@@ -89,11 +104,6 @@ fn get_provider_settings_summaries(
     state: tauri::State<'_, AppState>,
 ) -> Vec<ProviderSettingsSummary> {
     state.service.load_provider_settings_summaries()
-}
-
-#[tauri::command]
-fn open_settings_window(app: AppHandle) {
-    show_settings(&app);
 }
 
 #[tauri::command]
@@ -277,8 +287,53 @@ fn set_current_provider(
         enabled_providers: current.enabled_providers,
     };
 
-    let _ = save_dashboard_settings(app.clone(), state, updated)?;
-    Ok(app.state::<AppState>().snapshot.lock().unwrap().clone())
+    state
+        .service
+        .save_dashboard_settings(&updated)
+        .map_err(|error| format!("{error:#}"))?;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(updated.always_on_top);
+    }
+
+    let loading_snapshot = build_loading_snapshot(&updated);
+    {
+        let mut snapshot = state.snapshot.lock().unwrap();
+        *snapshot = loading_snapshot.clone();
+    }
+    let _ = apply_snapshot_to_tray(
+        &app,
+        &loading_snapshot,
+        &state.status_item,
+        &state.tokens_item,
+        &state.updated_item,
+    );
+    let _ = emit_snapshot(&app, &loading_snapshot);
+
+    let service = state.service.clone();
+    let snapshot_store = state.snapshot.clone();
+    let status_item = state.status_item.clone();
+    let tokens_item = state.tokens_item.clone();
+    let updated_item = state.updated_item.clone();
+    let current_provider_id = loading_snapshot.provider_id.clone();
+    let enabled_provider_ids = loading_snapshot.enabled_provider_ids.clone();
+
+    thread::spawn(move || {
+        let snapshot = match service.refresh(false) {
+            Ok(snapshot) => snapshot,
+            Err(error) => build_loading_error_snapshot(
+                &current_provider_id,
+                enabled_provider_ids,
+                format!("{error:#}"),
+            ),
+        };
+
+        *snapshot_store.lock().unwrap() = snapshot.clone();
+        let _ = apply_snapshot_to_tray(&app, &snapshot, &status_item, &tokens_item, &updated_item);
+        let _ = emit_snapshot(&app, &snapshot);
+    });
+
+    Ok(loading_snapshot)
 }
 
 #[tauri::command]
@@ -351,7 +406,6 @@ pub fn run() {
             get_dashboard_settings,
             get_provider_quota_settings,
             get_provider_settings_summaries,
-            open_settings_window,
             get_snapshot_for_date,
             get_usage_heatmap,
             warm_usage_history,
@@ -606,7 +660,7 @@ fn build_loading_snapshot(settings: &DashboardSettings) -> AppSnapshot {
         used_stale_pricing: false,
         last_refreshed_at: now.to_rfc3339(),
         quota: None,
-        dashboard_always_on_top: false,
+        dashboard_always_on_top: settings.always_on_top,
         warning: None,
         error_message: None,
     }
@@ -640,7 +694,21 @@ fn emit_snapshot(app: &AppHandle, snapshot: &AppSnapshot) -> tauri::Result<()> {
     app.emit("snapshot-updated", snapshot)
 }
 
-fn show_dashboard(app: &AppHandle) {
+fn emit_navigation(
+    app: &AppHandle,
+    view: WindowView,
+    reload_settings: Option<bool>,
+) -> tauri::Result<()> {
+    app.emit(
+        "navigate",
+        NavigateEvent {
+            view,
+            reload_settings,
+        },
+    )
+}
+
+fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -648,29 +716,14 @@ fn show_dashboard(app: &AppHandle) {
     }
 }
 
-fn show_settings(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(760.0, 660.0))));
-        let _ = window.set_size(Size::Logical(LogicalSize::new(860.0, 760.0)));
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        let _ = window.emit("settings-window-opened", ());
-        return;
-    }
+fn show_dashboard(app: &AppHandle) {
+    show_main_window(app);
+    let _ = emit_navigation(app, WindowView::Dashboard, None);
+}
 
-    if let Ok(window) =
-        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-            .title("codex-cost settings")
-            .inner_size(860.0, 760.0)
-            .min_inner_size(760.0, 660.0)
-            .resizable(true)
-            .visible(true)
-            .build()
-    {
-        let _ = window.set_focus();
-        let _ = window.emit("settings-window-opened", ());
-    }
+fn show_settings(app: &AppHandle) {
+    show_main_window(app);
+    let _ = emit_navigation(app, WindowView::Settings, Some(true));
 }
 
 fn logo_tray_icon() -> tauri::Result<Image<'static>> {
@@ -732,8 +785,12 @@ fn copy_png_base64_to_clipboard(png_base64: &str) -> Result<()> {
 mod tests {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
+    use serde_json::json;
 
-    use super::{build_loading_snapshot, copy_png_base64_to_clipboard, format_tray_title};
+    use super::{
+        build_loading_snapshot, copy_png_base64_to_clipboard, format_tray_title, NavigateEvent,
+        WindowView,
+    };
     use crate::domain::DashboardSettings;
     use crate::service::build_error_snapshot;
 
@@ -750,6 +807,41 @@ mod tests {
         let snapshot = build_error_snapshot("timeout");
 
         assert_eq!(format_tray_title(&snapshot), "--");
+    }
+
+    #[test]
+    fn loading_snapshot_preserves_dashboard_flags_from_settings() {
+        let settings = DashboardSettings {
+            always_on_top: true,
+            current_provider: "claude".to_string(),
+            enabled_providers: vec!["claude".to_string(), "kimi".to_string()],
+        };
+
+        let snapshot = build_loading_snapshot(&settings);
+
+        assert_eq!(snapshot.provider_id, "claude");
+        assert_eq!(
+            snapshot.enabled_provider_ids,
+            vec!["claude".to_string(), "kimi".to_string()]
+        );
+        assert!(snapshot.dashboard_always_on_top);
+    }
+
+    #[test]
+    fn navigation_event_payload_serializes_expected_view_name() {
+        let payload = serde_json::to_value(NavigateEvent {
+            view: WindowView::Settings,
+            reload_settings: Some(true),
+        })
+        .expect("navigate event should serialize");
+
+        assert_eq!(
+            payload,
+            json!({
+                "view": "settings",
+                "reloadSettings": true,
+            })
+        );
     }
 
     #[test]

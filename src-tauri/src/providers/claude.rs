@@ -9,10 +9,13 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::domain::{DailyUsage, ModelUsage, ProviderSettingsSummary, TokenUsage, UsageSnapshot};
-use crate::providers::UsageProvider;
+use crate::providers::{
+    load_file_signature, should_scan_file_for_date, FileParseCache, UsageProvider,
+};
 
 const DEFAULT_FALLBACK_MODEL: &str = "claude";
 
+#[derive(Clone)]
 struct ParsedProjectJsonl {
     snapshots: Vec<UsageSnapshot>,
     skipped_line_count: u64,
@@ -20,11 +23,15 @@ struct ParsedProjectJsonl {
 
 pub struct ClaudeUsageProvider {
     root: PathBuf,
+    parse_cache: FileParseCache<ParsedProjectJsonl>,
 }
 
 impl ClaudeUsageProvider {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            parse_cache: FileParseCache::default(),
+        }
     }
 
     pub fn default_root() -> Result<PathBuf> {
@@ -81,12 +88,26 @@ impl UsageProvider for ClaudeUsageProvider {
         let mut per_model_timeline = BTreeMap::<String, Vec<TokenUsage>>::new();
         let mut skipped_log_lines = 0u64;
         let mut skipped_log_files = 0u64;
+        let today = Local::now().date_naive();
+        let scope_key = date.format("%Y-%m-%d").to_string();
 
         for path in self.session_files() {
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let signature = load_file_signature(&path);
+            if !should_scan_file_for_date(
+                signature.as_ref().map(|value| value.modified_at),
+                date,
+                today,
+            ) {
+                continue;
+            }
 
-            let parsed = parse_project_jsonl(&path, &contents, date)?;
+            let parsed = self
+                .parse_cache
+                .get_or_try_parse(&path, &scope_key, signature, || {
+                    let contents = fs::read_to_string(&path)
+                        .with_context(|| format!("failed to read {}", path.display()))?;
+                    parse_project_jsonl(&path, &contents, date)
+                })?;
             skipped_log_lines += parsed.skipped_line_count;
             if parsed.skipped_line_count > 0 {
                 skipped_log_files += 1;
