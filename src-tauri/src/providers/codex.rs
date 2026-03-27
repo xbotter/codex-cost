@@ -192,7 +192,10 @@ where
     let mut previous_total = TokenUsage::default();
 
     for line in contents.lines().filter(|line| !line.trim().is_empty()) {
-        let value: Value = serde_json::from_str(line).context("invalid jsonl line")?;
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
         let entry_type = value
             .get("type")
             .and_then(Value::as_str)

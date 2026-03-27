@@ -392,6 +392,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_session_jsonl_skips_malformed_lines_without_failing_the_whole_session() {
+        let jsonl = r#"{"timestamp":"2026-03-17T02:05:57.058Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+not-json
+{"timestamp":"2026-03-17T02:07:26.915Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}"#;
+
+        let snapshots = parse_session_jsonl(
+            Path::new("C:/Users/test/.codex/sessions/2026/03/17/test.jsonl"),
+            jsonl,
+            chrono::NaiveDate::from_ymd_opt(2026, 3, 17).unwrap(),
+        )
+        .expect("session should parse");
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].model_name, "gpt-5.4");
+        assert_eq!(
+            snapshots[0].usage,
+            TokenUsage {
+                input_tokens: 100,
+                cached_input_tokens: 20,
+                cache_creation_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 1,
+            }
+        );
+    }
+
+    #[test]
     fn normalize_model_for_pricing_maps_codex_aliases_to_canonical_openai_models() {
         assert_eq!(normalize_model_for_pricing("gpt-5-codex"), "gpt-5");
         assert_eq!(normalize_model_for_pricing("gpt-5"), "gpt-5");
