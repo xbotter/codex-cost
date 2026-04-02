@@ -30,7 +30,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "html-to-image": "^1.11.13",
-    "lucide-static": "^0.577.0"
+    "lucide-static": "^1.7.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
